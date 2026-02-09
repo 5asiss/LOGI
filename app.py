@@ -6,7 +6,8 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = "sm_logitechs_ultimate_integrated_v62_final"
+# 배포 환경의 보안을 위해 환경 변수에서 SECRET_KEY를 가져오도록 수정
+app.secret_key = os.environ.get("SECRET_KEY", "sm_logitechs_ultimate_integrated_v62_final")
 db = SQLAlchemy()
 
 # 1. 환경 설정
@@ -259,21 +260,38 @@ def index(tab='dashboard'):
     today = datetime.now().strftime('%Y-%m-%d')
     
     for o in query:
-        # 현황판용 가로 데이터 구성
+        # 현황판용 전체 데이터 구성 (오더사항 + 거래처정보 + 기사정보)
         o.dashboard_row = {
+            # 오더 기본
+            "오더ID": o.id,
             "오더일": o.order_date[:10] if o.order_date else "",
+            "상태": o.payout_check,
             "노선": f"{o.load_loc} ➔ {o.unload_loc}",
+            "상차시간": o.actual_load_time or "-",
+            "하차시간": o.actual_unload_time or "-",
+            # 금액/정산
+            "화주운임": f"{o.shipper_fare:,}",
+            "기사운임": f"{o.driver_fare:,}",
+            "순수입": f"{(o.shipper_fare - o.driver_fare):,}",
+            "입금상태": o.unpaid_status or "정상",
+            "증빙완료": "OK" if o.is_receipt_ok else "미제출",
+            # 거래처 상세 (오더 기록 기준)
+            "업체명": o.client_name or "-",
+            "업체연락처": o.client_phone or "-",
+            "업체사업자번호": o.biz_num or "-",
+            "업체메일": o.email or "-",
+            "업체주소": o.address or "-",
+            "업체업태": o.biz_status or "-",
+            # 기사 상세 (오더 기록 기준)
             "기사명": o.driver_name or "-",
             "차량번호": o.car_num or "-",
-            "연락처": o.driver_phone or "-",
-            "업체명": o.client_name or "-",
-            "사업자번호": o.biz_num or "-",
-            "운임": f"{o.shipper_fare:,}",
-            "공급가액": f"{int(o.shipper_fare/1.1):,}",
-            "부가세": f"{int(o.shipper_fare - (o.shipper_fare/1.1)):,}",
-            "지급일": o.driver_payout_date or "-",
-            "기사운임": f"{o.driver_fare:,}",
-            "순수입": f"{(o.shipper_fare - o.driver_fare):,}"
+            "기사연락처": o.driver_phone or "-",
+            "기사계좌": o.driver_account or "-",
+            "기사사업자번호": o.driver_biz_num or "-",
+            "기사상호": o.driver_biz_name or "-",
+            # 메모
+            "오더메모": o.order_memo or "-",
+            "화주메모": o.extra_memo or "-"
         }
         if o.unpaid_status != '입금완료' and o.payout_check in ['배송완료', '지급완료']: stats['total_ar'] += o.shipper_fare
         if o.payout_check == '배송완료': stats['total_ap'] += o.driver_fare
@@ -308,6 +326,16 @@ ADMIN_HTML = """
         td { padding: 15px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 600; text-align: center; }
         .form-input { width: 100%; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.75rem; font-weight: 700; font-size: 13px; outline: none; }
         .form-label { font-size: 11px; font-weight: 800; color: #64748b; margin-bottom: 0.25rem; display: block; margin-left: 0.25rem; }
+        
+        /* 현황판 그림판 배열 스타일 (Sortable) */
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; padding: 1.5rem; }
+        .dashboard-card { 
+            background: white; border-radius: 1.5rem; border: 1px solid #e2e8f0; padding: 1.5rem; 
+            cursor: move; transition: transform 0.2s, box-shadow 0.2s; position: relative;
+        }
+        .dashboard-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
+        .dashboard-card.ui-sortable-placeholder { visibility: hidden; background: #f1f5f9; border: 2px dashed #cbd5e1; }
+        .card-shrunken { height: 80px; overflow: hidden; }
     </style>
 </head>
 <body class="p-4 md:p-8">
@@ -347,36 +375,130 @@ ADMIN_HTML = """
 
         {% if tab == 'dashboard' %}
         <section class="glass-card overflow-hidden border-t-8 border-blue-600 shadow-2xl">
-            <div class="p-4 bg-blue-50 border-b flex justify-between items-center"><h3 class="font-black text-blue-900 uppercase">Unified Logistics Dashboard (Horizontal Scroll)</h3></div>
-            <div class="overflow-auto max-h-[600px]">
-                <table class="w-full text-[11px] whitespace-nowrap border-collapse">
+            <div class="p-4 bg-blue-50 border-b flex justify-between items-center">
+                <h3 class="font-black text-blue-900 uppercase">Unified Logistics Dashboard (Full Data View)</h3>
+                <div class="flex gap-2">
+                    <button id="view_table" onclick="toggleView('table')" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black shadow">📋 전체 정보 테이블</button>
+                    <button id="view_grid" onclick="toggleView('grid')" class="bg-white text-black border border-blue-200 px-4 py-2 rounded-xl text-[11px] font-black shadow">🎨 그림판(배열)형</button>
+                </div>
+            </div>
+
+            <!-- 테이블 뷰 (확장 가로 스크롤 - 전체 정보 표기) -->
+            <div id="dashboard_table_view" class="overflow-auto max-h-[700px]">
+                <table class="w-full text-[10px] whitespace-nowrap border-collapse">
                     <thead class="sticky top-0 z-10">
                         <tr class="bg-slate-800 text-white">
-                            <th class="p-4">오더일</th><th class="p-4">노선</th><th class="p-4">기사명</th><th class="p-4">차량번호</th><th class="p-4">연락처</th>
-                            <th class="p-4">업체명</th><th class="p-4">사업자번호</th><th class="p-4 text-blue-300">운임</th><th class="p-4">공급가액</th>
-                            <th class="p-4">부가세</th><th class="p-4 text-orange-300">지급일</th><th class="p-4 text-orange-300">기사운임</th><th class="p-4 text-emerald-400">순수입</th>
+                            <!-- 오더 영역 -->
+                            <th class="p-4 bg-slate-900">ID</th>
+                            <th class="p-4 bg-slate-900">오더일</th>
+                            <th class="p-4 bg-slate-900">상태</th>
+                            <th class="p-4 bg-slate-900">노선</th>
+                            <th class="p-4 bg-slate-900">상/하차시간</th>
+                            <th class="p-4 bg-slate-900 text-blue-300">화주운임</th>
+                            <th class="p-4 bg-slate-900 text-orange-300">기사운임</th>
+                            <th class="p-4 bg-slate-900 text-emerald-300">순수입</th>
+                            <th class="p-4 bg-slate-900">입금/증빙</th>
+                            <!-- 거래처 영역 -->
+                            <th class="p-4 bg-blue-900/50">업체명</th>
+                            <th class="p-4 bg-blue-900/50">업체연락처</th>
+                            <th class="p-4 bg-blue-900/50">업체사업자번호</th>
+                            <th class="p-4 bg-blue-900/50">이메일</th>
+                            <th class="p-4 bg-blue-900/50">주소</th>
+                            <th class="p-4 bg-blue-900/50">업태</th>
+                            <!-- 기사 영역 -->
+                            <th class="p-4 bg-orange-900/50">기사명</th>
+                            <th class="p-4 bg-orange-900/50">차량번호</th>
+                            <th class="p-4 bg-orange-900/50">기사연락처</th>
+                            <th class="p-4 bg-orange-900/50">기사계좌</th>
+                            <th class="p-4 bg-orange-900/50">기사사업자</th>
+                            <th class="p-4 bg-orange-900/50">기사상호</th>
+                            <!-- 기타 -->
+                            <th class="p-4">메모(오더)</th>
+                            <th class="p-4">메모(화주)</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for o in orders %}
-                        <tr class="hover:bg-blue-50 transition-colors border-b">
-                            <td class="p-4 font-bold">{{ o.dashboard_row['오더일'] }}</td>
+                        <tr class="hover:bg-blue-50 transition-colors border-b cursor-pointer" onclick="openLogModal({{o.id}})">
+                            <td class="p-4 font-bold">{{ o.dashboard_row['오더ID'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['오더일'] }}</td>
+                            <td class="p-4 font-black">
+                                <span class="status-badge {{ 'bg-blue-600 text-white' if o.payout_check == '미배차' else 'bg-orange-500 text-white' if o.payout_check == '기사상차' else 'bg-slate-800 text-white' if o.payout_check == '배송완료' else 'bg-emerald-600 text-white' if o.payout_check == '지급완료' else 'bg-slate-200 text-slate-600' }}">
+                                    {{ o.dashboard_row['상태'] }}
+                                </span>
+                            </td>
                             <td class="p-4 font-black text-slate-800">{{ o.dashboard_row['노선'] }}</td>
-                            <td class="p-4 text-blue-600 font-bold">{{ o.dashboard_row['기사명'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['차량번호'] }}</td>
-                            <td class="p-4 text-slate-400">{{ o.dashboard_row['연락처'] }}</td>
-                            <td class="p-4 font-black">{{ o.dashboard_row['업체명'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['사업자번호'] }}</td>
-                            <td class="p-4 text-right font-black text-blue-600">{{ o.dashboard_row['운임'] }}원</td>
-                            <td class="p-4 text-right text-slate-400">{{ o.dashboard_row['공급가액'] }}</td>
-                            <td class="p-4 text-right text-slate-400">{{ o.dashboard_row['부가세'] }}</td>
-                            <td class="p-4 text-orange-600 font-bold">{{ o.dashboard_row['지급일'] }}</td>
-                            <td class="p-4 text-right font-black text-orange-600">{{ o.dashboard_row['기사운임'] }}원</td>
-                            <td class="p-4 text-right font-black text-emerald-600 bg-emerald-50">{{ o.dashboard_row['순수입'] }}원</td>
+                            <td class="p-4 text-slate-400">{{ o.dashboard_row['상차시간'] }} / {{ o.dashboard_row['하차시간'] }}</td>
+                            <td class="p-4 text-right font-black text-blue-600">{{ o.dashboard_row['화주운임'] }}</td>
+                            <td class="p-4 text-right font-black text-orange-600">{{ o.dashboard_row['기사운임'] }}</td>
+                            <td class="p-4 text-right font-black text-emerald-600 bg-emerald-50">{{ o.dashboard_row['순수입'] }}</td>
+                            <td class="p-4 font-bold text-[9px]">{{ o.dashboard_row['입금상태'] }} | {{ o.dashboard_row['증빙완료'] }}</td>
+                            
+                            <td class="p-4 font-black text-blue-700">{{ o.dashboard_row['업체명'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['업체연락처'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['업체사업자번호'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['업체메일'] }}</td>
+                            <td class="p-4 truncate max-w-[150px]">{{ o.dashboard_row['업체주소'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['업체업태'] }}</td>
+                            
+                            <td class="p-4 font-black text-orange-700">{{ o.dashboard_row['기사명'] }}</td>
+                            <td class="p-4 font-bold">{{ o.dashboard_row['차량번호'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['기사연락처'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['기사계좌'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['기사사업자번호'] }}</td>
+                            <td class="p-4">{{ o.dashboard_row['기사상호'] }}</td>
+                            
+                            <td class="p-4 truncate max-w-[100px]">{{ o.dashboard_row['오더메모'] }}</td>
+                            <td class="p-4 truncate max-w-[100px]">{{ o.dashboard_row['화주메모'] }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
+            </div>
+
+            <!-- 그리드(그림판) 뷰 - 드래그 앤 드롭 가능 (전체 정보 포함 카드) -->
+            <div id="dashboard_grid_view" class="dashboard-grid sortable-dashboard hidden">
+                {% for o in orders %}
+                <div class="dashboard-card" id="card_{{o.id}}" onclick="toggleCardSize(this)">
+                    <div class="flex justify-between items-start mb-3">
+                        <span class="status-badge bg-blue-600 text-white">{{ o.payout_check }}</span>
+                        <span class="text-[10px] text-slate-400 font-bold">#{{ o.id }} | {{ o.order_date[:10] }}</span>
+                    </div>
+                    <h4 class="text-md font-black text-slate-800 mb-1">{{ o.load_loc }} ➔ {{ o.unload_loc }}</h4>
+                    <p class="text-[11px] text-blue-600 font-black mb-4">{{ o.client_name }} <span class="text-slate-400 font-normal">({{ o.biz_num }})</span></p>
+                    
+                    <div class="card-details space-y-2 border-t pt-3">
+                        <!-- 거래처 전체 정보 -->
+                        <div class="bg-blue-50/50 p-2 rounded-lg mb-2">
+                            <p class="text-[9px] font-black text-blue-500 uppercase italic">Client Info</p>
+                            <div class="flex justify-between text-[10px]"><span>연락처:</span><span class="font-bold">{{ o.client_phone }}</span></div>
+                            <div class="flex justify-between text-[10px]"><span>이메일:</span><span class="font-bold">{{ o.email }}</span></div>
+                            <div class="flex justify-between text-[10px]"><span>주소:</span><span class="font-bold truncate max-w-[150px]">{{ o.address }}</span></div>
+                        </div>
+                        <!-- 기사 전체 정보 -->
+                        <div class="bg-orange-50/50 p-2 rounded-lg mb-2">
+                            <p class="text-[9px] font-black text-orange-500 uppercase italic">Driver Info</p>
+                            <div class="flex justify-between text-[10px]"><span>기사/차번:</span><span class="font-bold">{{ o.driver_name or '-' }} ({{ o.car_num or '-' }})</span></div>
+                            <div class="flex justify-between text-[10px]"><span>연락처:</span><span class="font-bold">{{ o.driver_phone or '-' }}</span></div>
+                            <div class="flex justify-between text-[10px]"><span>계좌:</span><span class="font-bold">{{ o.driver_account or '-' }}</span></div>
+                        </div>
+                        <!-- 운임 정보 -->
+                        <div class="flex justify-between text-[11px] px-1">
+                            <span class="text-slate-400">화주운임</span>
+                            <span class="font-black text-blue-600">{{ "{:,}".format(o.shipper_fare) }}원</span>
+                        </div>
+                        <div class="flex justify-between text-[11px] px-1">
+                            <span class="text-slate-400">기사운임</span>
+                            <span class="font-black text-orange-600">{{ "{:,}".format(o.driver_fare) }}원</span>
+                        </div>
+                        <!-- 메모 -->
+                        <div class="mt-2 text-[10px] bg-slate-100 p-2 rounded-lg">
+                            <span class="text-slate-400">오더메모:</span> <span class="text-slate-700 italic">{{ o.order_memo or '-' }}</span>
+                        </div>
+                    </div>
+                    <button onclick="event.stopPropagation(); openLogModal({{o.id}})" class="mt-4 w-full py-2 bg-slate-50 rounded-xl text-[10px] font-black text-slate-400 hover:bg-slate-100">상세 로그 열기</button>
+                </div>
+                {% endfor %}
             </div>
         </section>
         {% endif %}
@@ -550,7 +672,34 @@ ADMIN_HTML = """
                     $("#d_search").val(ui.item.value); $("#d_car").val(ui.item.car);
                 }
             });
+
+            // 드래그 앤 드롭(Sortable) 초기화
+            $(".sortable-dashboard").sortable({
+                placeholder: "ui-sortable-placeholder",
+                tolerance: "pointer"
+            }).disableSelection();
         });
+
+        // 뷰 토글 함수 (테이블 vs 그림판 배열)
+        function toggleView(mode) {
+            if(mode === 'table') {
+                $("#dashboard_table_view").show();
+                $("#dashboard_grid_view").hide();
+                $("#view_table").addClass("bg-blue-600 text-white").removeClass("bg-white text-black");
+                $("#view_grid").addClass("bg-white text-black border border-blue-200").removeClass("bg-blue-600 text-white");
+            } else {
+                $("#dashboard_table_view").hide();
+                $("#dashboard_grid_view").show().css("display", "grid");
+                $("#view_grid").addClass("bg-blue-600 text-white").removeClass("bg-white text-black");
+                $("#view_table").addClass("bg-white text-black border border-blue-200").removeClass("bg-blue-600 text-white");
+            }
+        }
+
+        // 카드 크기 축소/확대 토글
+        function toggleCardSize(el) {
+            $(el).toggleClass("card-shrunken");
+            $(el).find(".card-details").toggle();
+        }
 
         function setStatus(st) { $("#d_status_input").val(st); }
         function copyWorkLink(id) {
@@ -564,7 +713,7 @@ ADMIN_HTML = """
             $("#logModal").css("display","flex").fadeIn(100); 
             fetch('/api/order_logs/'+id).then(r=>r.json()).then(data=>{
                 let html = data.logs.map(l=>`<div class='p-3 bg-slate-50 rounded-2xl mb-2'><p class='text-[10px] text-slate-400'>${l.time}</p><p class='font-black text-xs text-slate-700'>[${l.status}] ${l.msg}</p></div>`).join('');
-                $("#log_content").html(html || "기록 없음");
+                $("#log_content").html(html || "기기록 없음");
             });
         }
         function openDispatchModal(id, client, s_fare, d_fare, load, unload, d_name, car, phone, acc, status, p_method, p_date, biz_num, biz_name, memo) {
@@ -712,4 +861,6 @@ DRIVER_DIRECT_WORK_HTML = """
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # 배포 환경용 포트 설정 (로컬 환경은 8000 사용)
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host='0.0.0.0', port=port, debug=True)
