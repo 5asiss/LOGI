@@ -22,7 +22,13 @@ app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = upload_folder
 db.init_app(app)
-
+# 기존 코드: db.init_app(app) 아래에 추가
+with app.app_context():
+    try:
+        db.create_all()
+        print("✅ 데이터베이스 테이블이 성공적으로 생성되었거나 이미 존재합니다.")
+    except Exception as e:
+        print(f"❌ DB 생성 중 오류 발생: {e}")
 # --------------------------------------------------------------------------------
 # 2. 데이터베이스 모델 (필드 완벽 보존)
 # --------------------------------------------------------------------------------
