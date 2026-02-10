@@ -1,873 +1,463 @@
-import os
+from flask import Flask, render_template_string, request, jsonify
 import pandas as pd
+import io
+import json
+import sqlite3
+import os
 from datetime import datetime, timedelta
-from flask import Flask, render_template_string, request, jsonify, redirect, url_for, send_from_directory, session
-from flask_sqlalchemy import SQLAlchemy
-from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-# 배포 환경의 보안을 위해 환경 변수에서 SECRET_KEY를 가져오도록 수정
-app.secret_key = os.environ.get("SECRET_KEY", "sm_logitechs_ultimate_integrated_v62_final")
-db = SQLAlchemy()
 
-# 1. 환경 설정
-basedir = os.path.abspath(os.path.dirname(__file__))
-db_path = os.path.join(basedir, "instance", "logi_v2026_final.db")
-upload_folder = os.path.join(basedir, "uploads")
+# 이미지 업로드 폴더 설정
+UPLOAD_FOLDER = 'static/evidences'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
-if not os.path.exists(os.path.join(basedir, "instance")): os.makedirs(os.path.join(basedir, "instance"))
-if not os.path.exists(upload_folder): os.makedirs(upload_folder)
+# --- [항목 정의 영역] ---
+FULL_COLUMNS = [
+    {"n": "비고", "k": "memo1"}, {"n": "요청내용", "k": "req_type"}, {"n": "구분", "k": "category"},
+    {"n": "우편/문자/팩스 발송 주소,연락처", "k": "send_to"}, {"n": "완료", "k": "is_done1", "t": "checkbox"},
+    {"n": "추가요청사항", "k": "req_add"}, {"n": "완료", "k": "is_done2", "t": "checkbox"},
+    {"n": "오더일", "k": "order_dt", "t": "date"}, {"n": "배차일", "k": "dispatch_dt", "t": "datetime-local"},
+    {"n": "노선", "k": "route"}, {"n": "기사명", "k": "d_name", "c": "driver-search"},
+    {"n": "차량번호", "k": "c_num", "c": "driver-search"}, {"n": "검색용", "k": "search_num"},
+    {"n": "연락처", "k": "d_phone", "c": "driver-search"}, {"n": "비고", "k": "memo2"},
+    {"n": "결제처", "k": "pay_to"}, {"n": "업체명", "k": "client_name", "c": "client-search"},
+    {"n": "담당자연락처", "k": "c_mgr_phone"}, {"n": "담당자", "k": "c_mgr_name"},
+    {"n": "연락처", "k": "c_phone"}, {"n": "사업자번호", "k": "biz_num"},
+    {"n": "사업장주소", "k": "biz_addr"}, {"n": "업종", "k": "biz_type1"},
+    {"n": "업태", "k": "biz_type2"}, {"n": "메일주소", "k": "mail"},
+    {"n": "도메인", "k": "domain"}, {"n": "사업자", "k": "biz_owner"},
+    {"n": "결제참고사항", "k": "pay_memo"}, {"n": "결제예정일", "k": "pay_due_dt", "t": "date"},
+    {"n": "장부이동내역", "k": "log_move"}, {"n": "입금일", "k": "in_dt", "t": "date"},
+    {"n": "수수료", "k": "comm", "t": "number"}, {"n": "선착불", "k": "pre_post"},
+    {"n": "업체운임", "k": "fee", "t": "number"}, {"n": "공급가액", "k": "sup_val", "t": "number"},
+    {"n": "부가세", "k": "vat1", "t": "number"}, {"n": "합계", "k": "total1", "t": "number"},
+    {"n": "입금자명", "k": "in_name"}, {"n": "월구분", "k": "month_val"},
+    {"n": "계산서발행일", "k": "tax_dt", "t": "date"}, {"n": "발행사업자", "k": "tax_biz"},
+    {"n": "폰", "k": "tax_phone"}, {"n": "계좌번호", "k": "bank_acc"},
+    {"n": "연락처", "k": "tax_contact"}, {"n": "사업자번호", "k": "tax_biz_num"},
+    {"n": "사업자", "k": "tax_biz_name"}, {"n": "지급일", "k": "out_dt", "t": "date"},
+    {"n": "기사운임", "k": "fee_out", "t": "number"}, {"n": "부가세", "k": "vat2", "t": "number"},
+    {"n": "합계", "k": "total2", "t": "number"}, {"n": "작성일자", "k": "write_dt", "t": "date"},
+    {"n": "발행일", "k": "issue_dt", "t": "date"}, {"n": "계산서확인", "k": "tax_chk", "t": "checkbox"},
+    {"n": "발행사업자", "k": "tax_biz2"}, {"n": "순수입", "k": "net_profit", "t": "number"},
+    {"n": "부가세", "k": "vat_final", "t": "number"},
+    {"n": "계산서사진", "k": "tax_img", "t": "text"},
+    {"n": "운송장사진", "k": "ship_img", "t": "text"},
+    {"n": "증빙사진", "k": "img_upload", "t": "link"}
+]
 
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = upload_folder
-db.init_app(app) 
-with app.app_context():
-# 기존 코드: db.init_app(app) 아래에 추가
+DRIVER_COLS = ["기사명", "차량번호", "연락처", "계좌번호", "사업자번호", "사업자", "개인/고정", "메모"]
+CLIENT_COLS = ["사업자구분", "업체명", "발행구분", "사업자등록번호", "대표자명", "사업자주소", "업태", "종목", "메일주소", "담당자", "연락처", "결제특이사항", "비고"]
 
-    try:
-        db.create_all()
-        print("✅ 데이터베이스 테이블이 성공적으로 생성되었거나 이미 존재합니다.")
-    except Exception as e:
-        print(f"❌ DB 생성 중 오류 발생: {e}")
-# --------------------------------------------------------------------------------
-# 2. 데이터베이스 모델 (필드 완벽 보존)
-# --------------------------------------------------------------------------------
+def init_db():
+    conn = sqlite3.connect('ledger.db')
+    cursor = conn.cursor()
+    cols_sql = ", ".join([f"{c['k']} TEXT" for c in FULL_COLUMNS])
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, {cols_sql})")
+    cursor.execute("PRAGMA table_info(ledger)")
+    existing_cols = [info[1] for info in cursor.fetchall()]
+    for col in ["tax_img", "ship_img"]:
+        if col not in existing_cols:
+            try: cursor.execute(f"ALTER TABLE ledger ADD COLUMN {col} TEXT")
+            except: pass
+    cursor.execute("CREATE TABLE IF NOT EXISTS drivers (id INTEGER PRIMARY KEY, " + ", ".join([f"'{c}' TEXT" for c in DRIVER_COLS]) + ")")
+    cursor.execute("CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY, " + ", ".join([f"'{c}' TEXT" for c in CLIENT_COLS]) + ")")
+    conn.commit(); conn.close()
 
-class MasterClient(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    biz_type = db.Column(db.String(50))      # 사업자구분
-    company = db.Column(db.String(100))      # 업체명
-    issue_type = db.Column(db.String(50))    # 발행구분
-    biz_num = db.Column(db.String(50))       # 사업자등록번호
-    biz_name = db.Column(db.String(100))     # 사업자명
-    owner_name = db.Column(db.String(50))    # 대표자명
-    address = db.Column(db.String(500))      # 사업자주소
-    biz_status = db.Column(db.String(100))   # 업태/업종
-    biz_item = db.Column(db.String(100))     # 종목
-    email = db.Column(db.String(100))        # 메일주소
-    manager = db.Column(db.String(50))       # 담당자
-    phone = db.Column(db.String(50))         # 연락처
-    payment_memo = db.Column(db.Text)        # 결제특이사항
+init_db()
+drivers_db = []; clients_db = []
 
-class MasterDriver(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50))          # 기사명
-    car_num = db.Column(db.String(50))       # 차량번호
-    phone = db.Column(db.String(50))         # 연락처
-    account = db.Column(db.String(100))      # 계좌번호
-    biz_num = db.Column(db.String(50))       # 사업자번호
-    biz_name = db.Column(db.String(100))     # 사업자(상호)
-    is_fixed = db.Column(db.String(50))      # 개인/고정
-    memo = db.Column(db.Text)                # 메모
+def load_db_to_mem():
+    global drivers_db, clients_db
+    conn = sqlite3.connect('ledger.db')
+    drivers_db = pd.read_sql("SELECT * FROM drivers", conn).fillna('').to_dict('records')
+    clients_db = pd.read_sql("SELECT * FROM clients", conn).fillna('').to_dict('records')
+    conn.close()
 
-class TransportOrder(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    client_name = db.Column(db.String(100)); client_phone = db.Column(db.String(50))
-    biz_num = db.Column(db.String(50)); email = db.Column(db.String(100)); address = db.Column(db.String(500))
-    biz_status = db.Column(db.String(100))
-    load_loc = db.Column(db.String(200)); unload_loc = db.Column(db.String(200))
-    receiver_name = db.Column(db.String(50)); receiver_phone = db.Column(db.String(50))
-    channel = db.Column(db.String(50)); order_date = db.Column(db.String(50)) 
-    start_dt = db.Column(db.String(50)); end_dt = db.Column(db.String(50))    
-    pay_method = db.Column(db.String(50)); pay_type = db.Column(db.String(50)); pay_date = db.Column(db.String(50))
-    shipper_fare = db.Column(db.Integer, default=0); driver_fare = db.Column(db.Integer, default=0)
-    unpaid_status = db.Column(db.String(20), default="정상"); unpaid_amount = db.Column(db.Integer, default=0)
-    extra_memo = db.Column(db.Text); order_tax_img = db.Column(db.String(200)) 
-    
-    driver_name = db.Column(db.String(50)); car_num = db.Column(db.String(50)); driver_phone = db.Column(db.String(50))
-    driver_account = db.Column(db.String(100)); driver_biz_num = db.Column(db.String(50)); driver_biz_name = db.Column(db.String(100))
-    payout_check = db.Column(db.String(20), default="미배차")
-    order_memo = db.Column(db.Text); driver_waybill_img = db.Column(db.String(200)); driver_tax_img = db.Column(db.String(200))
-    actual_load_time = db.Column(db.String(50)); actual_unload_time = db.Column(db.String(50))
-    estimated_arrival_time = db.Column(db.String(50))
-    
-    payment_method_order = db.Column(db.String(50))
-    order_due_date = db.Column(db.String(50))
-    driver_payout_method = db.Column(db.String(50))
-    driver_payout_date = db.Column(db.String(50))
-    is_receipt_ok = db.Column(db.Boolean, default=False)
+load_db_to_mem()
 
-class DeliveryLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    order_id = db.Column(db.Integer, db.ForeignKey('transport_order.id'))
-    status = db.Column(db.String(50)); message = db.Column(db.Text)
-    created_at = db.Column(db.String(50), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
-# --------------------------------------------------------------------------------
-# 3. 비즈니스 로직 및 API
-# --------------------------------------------------------------------------------
-
-def save_file(file):
-    if file and file.filename:
-        filename = secure_filename(f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}")
-        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-        return filename
-    return ""
-
-def add_log(order_id, status, message):
-    log = DeliveryLog(order_id=order_id, status=status, message=message)
-    db.session.add(log)
-
-@app.route('/api/autocomplete/<type>')
-def autocomplete(type):
-    q = request.args.get('term', '')
-    if type == 'client':
-        res = MasterClient.query.filter((MasterClient.company.contains(q)) | (MasterClient.phone.contains(q)) | (MasterClient.biz_num.contains(q))).all()
-        return jsonify([{"label": f"{c.company} ({c.biz_num})", "value": c.company, "phone": c.phone, "biz": c.biz_num, "email": c.email, "addr": c.address, "status": c.biz_status} for c in res])
-    else:
-        res = MasterDriver.query.filter((MasterDriver.name.contains(q)) | (MasterDriver.car_num.contains(q)) | (MasterDriver.phone.contains(q))).all()
-        return jsonify([{"label": f"{d.name} ({d.phone})", "value": d.name, "phone": d.phone, "car": d.car_num, "acc": d.account, "biz_num": d.biz_num, "biz_name": d.biz_name, "is_fixed": d.is_fixed} for d in res])
-
-@app.route('/api/order_logs/<int:id>')
-def get_order_logs(id):
-    logs = DeliveryLog.query.filter_by(order_id=id).order_by(DeliveryLog.id.desc()).all()
-    order = TransportOrder.query.get(id)
-    return jsonify({"logs": [{"time": l.created_at, "status": l.status, "msg": l.message} for l in logs]})
-
-@app.route('/upload/client', methods=['POST'])
-def upload_client_excel():
-    file = request.files.get('file')
-    if not file: return redirect(url_for('index', tab='client'))
-    try:
-        df = pd.read_excel(file, dtype=str).fillna("")
-        for _, r in df.iterrows():
-            if not r.get('업체명'): continue
-            db.session.add(MasterClient(
-                biz_type=r.get('사업자구분',''), company=r.get('업체명',''), issue_type=r.get('발행구분',''),
-                biz_num=str(r.get('사업자등록번호','')), biz_name=r.get('사업자명',''), owner_name=r.get('대표자명',''),
-                address=r.get('사업자주소',''), biz_status=r.get('업태',''), biz_item=r.get('종목',''),
-                email=r.get('메일주소',''), manager=r.get('담당자',''), phone=r.get('연락처',''), payment_memo=r.get('결제특이사항','')
-            ))
-        db.session.commit()
-    except Exception: db.session.rollback()
-    return redirect(url_for('index', tab='client'))
-
-@app.route('/upload/driver', methods=['POST'])
-def upload_driver_excel():
-    file = request.files.get('file')
-    if not file: return redirect(url_for('index', tab='driver'))
-    try:
-        df = pd.read_excel(file, dtype=str).fillna("")
-        for _, r in df.iterrows():
-            if not r.get('기사명'): continue
-            db.session.add(MasterDriver(
-                name=r.get('기사명'), car_num=r.get('차량번호'), phone=r.get('연락처'),
-                account=r.get('계좌번호'), biz_num=r.get('사업자번호'), biz_name=r.get('사업자'),
-                is_fixed=r.get('개인/고정'), memo=r.get('메모')
-            ))
-        db.session.commit()
-    except Exception: db.session.rollback()
-    return redirect(url_for('index', tab='driver'))
-
-@app.route('/api/edit/client/<int:id>', methods=['POST'])
-def edit_client(id):
-    c = MasterClient.query.get_or_404(id)
-    for field in ['biz_type','company','biz_num','phone','address','email']:
-        setattr(c, field, request.form.get(field))
-    db.session.commit(); return redirect(url_for('index', tab='client'))
-
-@app.route('/api/edit/driver/<int:id>', methods=['POST'])
-def edit_driver(id):
-    d = MasterDriver.query.get_or_404(id)
-    for field in ['name','car_num','phone','account']:
-        setattr(d, field, request.form.get(field))
-    db.session.commit(); return redirect(url_for('index', tab='driver'))
-
-@app.route('/order/add', methods=['POST'])
-def add_order():
-    c_name = request.form.get('client_name')
-    new_o = TransportOrder(
-        client_name=c_name, client_phone=request.form.get('client_phone'), biz_num=request.form.get('biz_num'),
-        load_loc=request.form.get('load_loc'), unload_loc=request.form.get('unload_loc'),
-        order_date=request.form.get('order_date') or datetime.now().strftime('%Y-%m-%d %H:%M'),
-        shipper_fare=int(request.form.get('shipper_fare', 0) or 0), driver_fare=int(request.form.get('driver_fare', 0) or 0),
-        payout_check="미배차"
-    )
-    db.session.add(new_o); db.session.flush(); add_log(new_o.id, "신규등록", "오더 생성"); db.session.commit()
-    return redirect(url_for('index', tab='order'))
-
-@app.route('/order/dispatch/<int:id>', methods=['POST'])
-def update_dispatch(id):
-    o = TransportOrder.query.get_or_404(id)
-    fields = ['load_loc','unload_loc','driver_name','car_num','driver_phone','driver_account','driver_biz_num','driver_biz_name','order_memo']
-    for f in fields: setattr(o, f, request.form.get(f))
-    o.shipper_fare = int(request.form.get('shipper_fare', 0) or 0)
-    o.driver_fare = int(request.form.get('driver_fare', 0) or 0)
-    o.payout_check = request.form.get('payout_check', '배차완료')
-    add_log(o.id, o.payout_check, "배차 정보 업데이트"); db.session.commit()
-    return redirect(url_for('index', tab='dispatch'))
-
-@app.route('/order/complete/<int:id>', methods=['POST'])
-def complete_order(id):
-    o = TransportOrder.query.get_or_404(id)
-    o.driver_waybill_img = save_file(request.files.get('driver_waybill_img'))
-    if o.driver_waybill_img: o.is_receipt_ok = True
-    o.driver_tax_img = save_file(request.files.get('driver_tax_img'))
-    o.payout_check = "배송완료"
-    add_log(o.id, "배송완료", "증빙 업로드 완료"); db.session.commit()
-    return redirect(url_for('index', tab='dispatch'))
-
-@app.route('/api/order_settle/<int:id>', methods=['POST'])
-def order_settle(id):
-    o = TransportOrder.query.get_or_404(id)
-    action = request.form.get('action')
-    if action == 'shipper_pay': o.unpaid_status = "입금완료"; add_log(o.id, "입금확인", "화주 입금 완료")
-    elif action == 'driver_payout': o.payout_check = "지급완료"; add_log(o.id, "지급완료", "기사료 지급 완료")
-    db.session.commit(); return redirect(url_for('index', tab=request.form.get('current_tab', 'order')))
-
-@app.route('/delete/<type>/<int:id>')
-def delete_item(type, id):
-    target = db.session.get(TransportOrder, id) if type in ['order','dispatch'] else db.session.get(MasterClient, id) if type=='client' else db.session.get(MasterDriver, id)
-    if target: db.session.delete(target); db.session.commit()
-    return redirect(url_for('index', tab=type))
-
-@app.route('/uploads/<filename>')
-def uploaded_file(filename): return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-# --------------------------------------------------------------------------------
-# 4. 기사용 페이지 (Direct Link 포함)
-# --------------------------------------------------------------------------------
-
-@app.route('/work', methods=['GET', 'POST'])
-def driver_work():
-    name = request.args.get('name', '').strip()
-    driver = MasterDriver.query.filter_by(name=name).first()
-    if not driver: return render_template_string(DRIVER_LOGIN_HTML)
-    tasks = TransportOrder.query.filter_by(car_num=driver.car_num).order_by(TransportOrder.id.desc()).all()
-    return render_template_string(DRIVER_WORK_HTML, driver=driver, tasks=tasks)
-
-@app.route('/work/direct/<int:order_id>')
-def driver_direct_work(order_id):
-    o = TransportOrder.query.get_or_404(order_id)
-    if not o.driver_name: return "배차 정보 없음", 404
-    return render_template_string(DRIVER_DIRECT_WORK_HTML, t=o)
-
-@app.route('/api/work_update/<int:id>', methods=['POST'])
-def work_update(id):
-    o = TransportOrder.query.get_or_404(id)
-    o.actual_load_time = request.form.get('actual_load_time')
-    o.actual_unload_time = request.form.get('actual_unload_time')
-    wb = save_file(request.files.get('driver_waybill_img'))
-    tx = save_file(request.files.get('driver_tax_img'))
-    if wb: o.driver_waybill_img = wb; o.is_receipt_ok = True
-    if tx: o.driver_tax_img = tx
-    if o.actual_unload_time and (wb or tx): o.payout_check = "배송완료"
-    db.session.commit(); return redirect(url_for('driver_work', name=o.driver_name))
-
-# --------------------------------------------------------------------------------
-# 5. 메인 화면 로직 (현황판 데이터 매핑 추가)
-# --------------------------------------------------------------------------------
-
-@app.route('/')
-@app.route('/tab/<tab>')
-def index(tab='dashboard'):
-    query = TransportOrder.query.order_by(TransportOrder.id.desc()).all()
-    stats = {'today': 0, 'total_ar': 0, 'total_ap': 0}
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    for o in query:
-        # 현황판용 전체 데이터 구성 (오더사항 + 거래처정보 + 기사정보)
-        o.dashboard_row = {
-            # 오더 기본
-            "오더ID": o.id,
-            "오더일": o.order_date[:10] if o.order_date else "",
-            "상태": o.payout_check,
-            "노선": f"{o.load_loc} ➔ {o.unload_loc}",
-            "상차시간": o.actual_load_time or "-",
-            "하차시간": o.actual_unload_time or "-",
-            # 금액/정산
-            "화주운임": f"{o.shipper_fare:,}",
-            "기사운임": f"{o.driver_fare:,}",
-            "순수입": f"{(o.shipper_fare - o.driver_fare):,}",
-            "입금상태": o.unpaid_status or "정상",
-            "증빙완료": "OK" if o.is_receipt_ok else "미제출",
-            # 거래처 상세 (오더 기록 기준)
-            "업체명": o.client_name or "-",
-            "업체연락처": o.client_phone or "-",
-            "업체사업자번호": o.biz_num or "-",
-            "업체메일": o.email or "-",
-            "업체주소": o.address or "-",
-            "업체업태": o.biz_status or "-",
-            # 기사 상세 (오더 기록 기준)
-            "기사명": o.driver_name or "-",
-            "차량번호": o.car_num or "-",
-            "기사연락처": o.driver_phone or "-",
-            "기사계좌": o.driver_account or "-",
-            "기사사업자번호": o.driver_biz_num or "-",
-            "기사상호": o.driver_biz_name or "-",
-            # 메모
-            "오더메모": o.order_memo or "-",
-            "화주메모": o.extra_memo or "-"
-        }
-        if o.unpaid_status != '입금완료' and o.payout_check in ['배송완료', '지급완료']: stats['total_ar'] += o.shipper_fare
-        if o.payout_check == '배송완료': stats['total_ap'] += o.driver_fare
-        if o.order_date and o.order_date[:10] == today: stats['today'] += o.shipper_fare
-
-    clients = MasterClient.query.all(); drivers = MasterDriver.query.all()
-    return render_template_string(ADMIN_HTML, tab=tab, orders=query, clients=clients, drivers=drivers, stats=stats, now_time=datetime.now().strftime('%Y-%m-%dT%H:%M'))
-
-# --------------------------------------------------------------------------------
-# 통합 HTML (v62 디자인 + 현황판 + 클릭 해결)
-# --------------------------------------------------------------------------------
-
-ADMIN_HTML = """
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>주식회사 에스엠로지텍 TMS v62.0</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
-    <link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <style>
-        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-        body { font-family: 'Pretendard', sans-serif; background-color: #f1f5f9; color: #1e293b; }
-        .glass-card { background: white; border-radius: 1.5rem; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-        .tab-active { background: #2563eb; color: white !important; font-weight: 800; box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.2); }
-        .status-badge { padding: 4px 10px; border-radius: 9999px; font-weight: 800; font-size: 10px; }
-        .modal { display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(4px); z-index: 100; align-items: center; justify-content: center; }
-        th { background: #f8fafc; color: #64748b; font-size: 11px; font-weight: 800; padding: 15px; border-bottom: 2px solid #e2e8f0; text-align: center; }
-        td { padding: 15px; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 600; text-align: center; }
-        .form-input { width: 100%; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.75rem; font-weight: 700; font-size: 13px; outline: none; }
-        .form-label { font-size: 11px; font-weight: 800; color: #64748b; margin-bottom: 0.25rem; display: block; margin-left: 0.25rem; }
-        
-        /* 현황판 그림판 배열 스타일 (Sortable) */
-        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; padding: 1.5rem; }
-        .dashboard-card { 
-            background: white; border-radius: 1.5rem; border: 1px solid #e2e8f0; padding: 1.5rem; 
-            cursor: move; transition: transform 0.2s, box-shadow 0.2s; position: relative;
-        }
-        .dashboard-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
-        .dashboard-card.ui-sortable-placeholder { visibility: hidden; background: #f1f5f9; border: 2px dashed #cbd5e1; }
-        .card-shrunken { height: 80px; overflow: hidden; }
-    </style>
-</head>
-<body class="p-4 md:p-8">
-    <div class="max-w-[1850px] mx-auto space-y-8">
-        <header class="flex flex-col md:flex-row md:items-center justify-between gap-6 bg-white p-6 rounded-[2rem] shadow-sm border border-white">
-            <h1 class="text-3xl font-[900] tracking-tighter text-slate-900 flex items-center gap-3">
-                <span class="text-blue-600 uppercase italic">SM LOGITECHS</span> <span class="bg-slate-800 text-white px-3 py-1 rounded-2xl text-xl not-italic">TMS v62</span>
-            </h1>
-            <nav class="flex gap-1 p-1 bg-slate-100 rounded-2xl overflow-x-auto">
-                <a href="/tab/dashboard" class="whitespace-nowrap px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-white {{ 'tab-active' if tab == 'dashboard' }}">📊 현황판보기</a>
-                {% for t in ['order','dispatch','client','driver','revenue','unpaid'] %}
-                <a href="/tab/{{t}}" class="whitespace-nowrap px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-white {{ 'tab-active' if tab == t }}">
-                    {{ {'order':'오더관리','dispatch':'배차관리','client':'거래처관리','driver':'기사관리','revenue':'매출정산','unpaid':'미수금'}[t] }}
-                </a>
-                {% endfor %}
-            </nav>
-        </header>
-
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-6">
-            <div class="glass-card p-6 border-l-[6px] border-blue-600">
-                <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">오늘 매출</p>
-                <h2 class="text-2xl font-black mt-1">{{ "{:,}".format(stats['today']) }}원</h2>
-            </div>
-            <div class="glass-card p-6 border-l-[6px] border-red-500">
-                <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">미수금(AR)</p>
-                <h2 class="text-2xl font-black mt-1">{{ "{:,}".format(stats['total_ar']) }}원</h2>
-            </div>
-            <div class="glass-card p-6 border-l-[6px] border-orange-500">
-                <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">미지급(AP)</p>
-                <h2 class="text-2xl font-black mt-1">{{ "{:,}".format(stats['total_ap']) }}원</h2>
-            </div>
-            <div class="glass-card p-6 border-l-[6px] border-slate-800">
-                <p class="text-[11px] font-black text-slate-400 uppercase tracking-widest">총 오더 건수</p>
-                <h2 class="text-2xl font-black mt-1">{{ orders|length }}건</h2>
-            </div>
-        </div>
-
-        {% if tab == 'dashboard' %}
-        <section class="glass-card overflow-hidden border-t-8 border-blue-600 shadow-2xl">
-            <div class="p-4 bg-blue-50 border-b flex justify-between items-center">
-                <h3 class="font-black text-blue-900 uppercase">Unified Logistics Dashboard (Full Data View)</h3>
-                <div class="flex gap-2">
-                    <button id="view_table" onclick="toggleView('table')" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black shadow">📋 전체 정보 테이블</button>
-                    <button id="view_grid" onclick="toggleView('grid')" class="bg-white text-black border border-blue-200 px-4 py-2 rounded-xl text-[11px] font-black shadow">🎨 그림판(배열)형</button>
-                </div>
-            </div>
-
-            <!-- 테이블 뷰 (확장 가로 스크롤 - 전체 정보 표기) -->
-            <div id="dashboard_table_view" class="overflow-auto max-h-[700px]">
-                <table class="w-full text-[10px] whitespace-nowrap border-collapse">
-                    <thead class="sticky top-0 z-10">
-                        <tr class="bg-slate-800 text-white">
-                            <!-- 오더 영역 -->
-                            <th class="p-4 bg-slate-900">ID</th>
-                            <th class="p-4 bg-slate-900">오더일</th>
-                            <th class="p-4 bg-slate-900">상태</th>
-                            <th class="p-4 bg-slate-900">노선</th>
-                            <th class="p-4 bg-slate-900">상/하차시간</th>
-                            <th class="p-4 bg-slate-900 text-blue-300">화주운임</th>
-                            <th class="p-4 bg-slate-900 text-orange-300">기사운임</th>
-                            <th class="p-4 bg-slate-900 text-emerald-300">순수입</th>
-                            <th class="p-4 bg-slate-900">입금/증빙</th>
-                            <!-- 거래처 영역 -->
-                            <th class="p-4 bg-blue-900/50">업체명</th>
-                            <th class="p-4 bg-blue-900/50">업체연락처</th>
-                            <th class="p-4 bg-blue-900/50">업체사업자번호</th>
-                            <th class="p-4 bg-blue-900/50">이메일</th>
-                            <th class="p-4 bg-blue-900/50">주소</th>
-                            <th class="p-4 bg-blue-900/50">업태</th>
-                            <!-- 기사 영역 -->
-                            <th class="p-4 bg-orange-900/50">기사명</th>
-                            <th class="p-4 bg-orange-900/50">차량번호</th>
-                            <th class="p-4 bg-orange-900/50">기사연락처</th>
-                            <th class="p-4 bg-orange-900/50">기사계좌</th>
-                            <th class="p-4 bg-orange-900/50">기사사업자</th>
-                            <th class="p-4 bg-orange-900/50">기사상호</th>
-                            <!-- 기타 -->
-                            <th class="p-4">메모(오더)</th>
-                            <th class="p-4">메모(화주)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for o in orders %}
-                        <tr class="hover:bg-blue-50 transition-colors border-b cursor-pointer" onclick="openLogModal({{o.id}})">
-                            <td class="p-4 font-bold">{{ o.dashboard_row['오더ID'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['오더일'] }}</td>
-                            <td class="p-4 font-black">
-                                <span class="status-badge {{ 'bg-blue-600 text-white' if o.payout_check == '미배차' else 'bg-orange-500 text-white' if o.payout_check == '기사상차' else 'bg-slate-800 text-white' if o.payout_check == '배송완료' else 'bg-emerald-600 text-white' if o.payout_check == '지급완료' else 'bg-slate-200 text-slate-600' }}">
-                                    {{ o.dashboard_row['상태'] }}
-                                </span>
-                            </td>
-                            <td class="p-4 font-black text-slate-800">{{ o.dashboard_row['노선'] }}</td>
-                            <td class="p-4 text-slate-400">{{ o.dashboard_row['상차시간'] }} / {{ o.dashboard_row['하차시간'] }}</td>
-                            <td class="p-4 text-right font-black text-blue-600">{{ o.dashboard_row['화주운임'] }}</td>
-                            <td class="p-4 text-right font-black text-orange-600">{{ o.dashboard_row['기사운임'] }}</td>
-                            <td class="p-4 text-right font-black text-emerald-600 bg-emerald-50">{{ o.dashboard_row['순수입'] }}</td>
-                            <td class="p-4 font-bold text-[9px]">{{ o.dashboard_row['입금상태'] }} | {{ o.dashboard_row['증빙완료'] }}</td>
-                            
-                            <td class="p-4 font-black text-blue-700">{{ o.dashboard_row['업체명'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['업체연락처'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['업체사업자번호'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['업체메일'] }}</td>
-                            <td class="p-4 truncate max-w-[150px]">{{ o.dashboard_row['업체주소'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['업체업태'] }}</td>
-                            
-                            <td class="p-4 font-black text-orange-700">{{ o.dashboard_row['기사명'] }}</td>
-                            <td class="p-4 font-bold">{{ o.dashboard_row['차량번호'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['기사연락처'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['기사계좌'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['기사사업자번호'] }}</td>
-                            <td class="p-4">{{ o.dashboard_row['기사상호'] }}</td>
-                            
-                            <td class="p-4 truncate max-w-[100px]">{{ o.dashboard_row['오더메모'] }}</td>
-                            <td class="p-4 truncate max-w-[100px]">{{ o.dashboard_row['화주메모'] }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- 그리드(그림판) 뷰 - 드래그 앤 드롭 가능 (전체 정보 포함 카드) -->
-            <div id="dashboard_grid_view" class="dashboard-grid sortable-dashboard hidden">
-                {% for o in orders %}
-                <div class="dashboard-card" id="card_{{o.id}}" onclick="toggleCardSize(this)">
-                    <div class="flex justify-between items-start mb-3">
-                        <span class="status-badge bg-blue-600 text-white">{{ o.payout_check }}</span>
-                        <span class="text-[10px] text-slate-400 font-bold">#{{ o.id }} | {{ o.order_date[:10] }}</span>
-                    </div>
-                    <h4 class="text-md font-black text-slate-800 mb-1">{{ o.load_loc }} ➔ {{ o.unload_loc }}</h4>
-                    <p class="text-[11px] text-blue-600 font-black mb-4">{{ o.client_name }} <span class="text-slate-400 font-normal">({{ o.biz_num }})</span></p>
-                    
-                    <div class="card-details space-y-2 border-t pt-3">
-                        <!-- 거래처 전체 정보 -->
-                        <div class="bg-blue-50/50 p-2 rounded-lg mb-2">
-                            <p class="text-[9px] font-black text-blue-500 uppercase italic">Client Info</p>
-                            <div class="flex justify-between text-[10px]"><span>연락처:</span><span class="font-bold">{{ o.client_phone }}</span></div>
-                            <div class="flex justify-between text-[10px]"><span>이메일:</span><span class="font-bold">{{ o.email }}</span></div>
-                            <div class="flex justify-between text-[10px]"><span>주소:</span><span class="font-bold truncate max-w-[150px]">{{ o.address }}</span></div>
-                        </div>
-                        <!-- 기사 전체 정보 -->
-                        <div class="bg-orange-50/50 p-2 rounded-lg mb-2">
-                            <p class="text-[9px] font-black text-orange-500 uppercase italic">Driver Info</p>
-                            <div class="flex justify-between text-[10px]"><span>기사/차번:</span><span class="font-bold">{{ o.driver_name or '-' }} ({{ o.car_num or '-' }})</span></div>
-                            <div class="flex justify-between text-[10px]"><span>연락처:</span><span class="font-bold">{{ o.driver_phone or '-' }}</span></div>
-                            <div class="flex justify-between text-[10px]"><span>계좌:</span><span class="font-bold">{{ o.driver_account or '-' }}</span></div>
-                        </div>
-                        <!-- 운임 정보 -->
-                        <div class="flex justify-between text-[11px] px-1">
-                            <span class="text-slate-400">화주운임</span>
-                            <span class="font-black text-blue-600">{{ "{:,}".format(o.shipper_fare) }}원</span>
-                        </div>
-                        <div class="flex justify-between text-[11px] px-1">
-                            <span class="text-slate-400">기사운임</span>
-                            <span class="font-black text-orange-600">{{ "{:,}".format(o.driver_fare) }}원</span>
-                        </div>
-                        <!-- 메모 -->
-                        <div class="mt-2 text-[10px] bg-slate-100 p-2 rounded-lg">
-                            <span class="text-slate-400">오더메모:</span> <span class="text-slate-700 italic">{{ o.order_memo or '-' }}</span>
-                        </div>
-                    </div>
-                    <button onclick="event.stopPropagation(); openLogModal({{o.id}})" class="mt-4 w-full py-2 bg-slate-50 rounded-xl text-[10px] font-black text-slate-400 hover:bg-slate-100">상세 로그 열기</button>
-                </div>
-                {% endfor %}
-            </div>
-        </section>
-        {% endif %}
-
-        {% if tab == 'order' %}
-        <section class="glass-card p-8 border-t-8 border-slate-800 shadow-xl">
-            <h3 class="text-lg font-black mb-6 italic underline decoration-blue-500">📑 발주 정보 통합 등록</h3>
-            <form action="/order/add" method="POST" class="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                <div class="md:col-span-2"><label class="form-label text-blue-600">거래처명(검색)</label><input type="text" id="c_search" name="client_name" class="form-input bg-blue-50/50" placeholder="업체명 검색"></div>
-                <div><label class="form-label text-blue-600">사업자번호</label><input type="text" id="c_biz" name="biz_num" class="form-input bg-blue-50/50"></div>
-                <div class="md:col-span-2"><label class="form-label font-black">🚛 노선 정보 (상차 ➔ 하차)</label><div class="flex items-center gap-2 mt-1"><input type="text" name="load_loc" class="flex-1 form-input bg-emerald-50" placeholder="상차지"><i class="fa-solid fa-arrow-right text-slate-300"></i><input type="text" name="unload_loc" class="flex-1 form-input bg-orange-50" placeholder="하차지"></div></div>
-                <div><label class="form-label">오더접수일시</label><input type="datetime-local" name="order_date" value="{{ now_time }}" class="form-input text-xs"></div>
-                <div><label class="form-label text-blue-600 font-black">화주운임</label><input type="number" name="shipper_fare" class="form-input border-blue-200 font-black text-blue-700"></div>
-                <div><label class="form-label text-orange-600 font-black">기사운임</label><input type="number" name="driver_fare" class="form-input border-orange-200 font-black text-orange-700"></div>
-                <div class="md:col-span-2 flex items-end"><button type="submit" class="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg hover:-translate-y-1 transition-all">오더 최종 확정</button></div>
-                <input type="hidden" name="client_phone" id="c_phone"><input type="hidden" name="email" id="c_email"><input type="hidden" name="address" id="c_addr"><input type="hidden" name="biz_status" id="c_status">
-            </form>
-        </section>
-
-        <section class="glass-card overflow-hidden">
-            <div class="overflow-x-auto">
-                <table class="w-full">
-                    <thead><tr><th>상태</th><th>거래처/기사</th><th>노선</th><th class="text-right">화주운임</th><th class="text-right">기사운임</th><th>관리</th></tr></thead>
-                    <tbody>
-                        {% for o in orders %}
-                        <tr class="hover:bg-slate-50 transition-colors cursor-pointer group">
-                            <td onclick="openLogModal({{o.id}})"><span class="status-badge {{ 'bg-blue-600 text-white' if o.payout_check == '미배차' else 'bg-orange-500 text-white' if o.payout_check == '기사상차' else 'bg-slate-800 text-white' if o.payout_check == '배송완료' else 'bg-emerald-600 text-white' if o.payout_check == '지급완료' else 'bg-slate-200 text-slate-600' }}">{{ o.payout_check }}</span></td>
-                            <td onclick="openLogModal({{o.id}})" class="text-left"><div class="font-black text-slate-900">{{ o.client_name }}</div><div class="text-[11px] font-bold text-blue-600">{{ o.driver_name or '-' }}</div></td>
-                            <td onclick="openLogModal({{o.id}})" class="font-bold text-slate-500 text-[12px]">{{ o.load_loc }} ➔ {{ o.unload_loc }}</td>
-                            <td onclick="openLogModal({{o.id}})" class="text-right font-black text-blue-600">{{ "{:,}".format(o.shipper_fare) }}원</td>
-                            <td onclick="openLogModal({{o.id}})" class="text-right font-black text-orange-600">{{ "{:,}".format(o.driver_fare) }}원</td>
-                            <td onclick="event.stopPropagation()"><a href="/delete/order/{{o.id}}" class="text-slate-300 hover:text-red-600 transition-colors" onclick="return confirm('삭제?')"><i class="fa-solid fa-trash"></i></a></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </section>
-        {% endif %}
-
-        {% if tab == 'dispatch' %}
-        <section class="glass-card overflow-hidden border-t-8 border-orange-500 shadow-2xl">
-            <div class="p-6 bg-orange-50 border-b flex justify-between items-center"><h3 class="font-black text-orange-900 italic uppercase underline decoration-orange-300">Dispatch Live View (Direct Link Enable)</h3></div>
-            <table class="w-full text-xs">
-                <thead><tr><th>상태</th><th>화주</th><th>기사명/차번</th><th>노선</th><th class="text-right">기사운임</th><th>작업 및 링크</th></tr></thead>
-                <tbody>
-                    {% for o in orders if o.payout_check in ['미배차','배차완료','기사상차','배송완료'] %}
-                    <tr class="hover:bg-orange-50/50 transition-all cursor-pointer">
-                        <td onclick="openLogModal({{o.id}})"><span class="status-badge {{ 'bg-orange-600 text-white' if o.payout_check == '기사상차' else 'bg-blue-600 text-white' if o.payout_check == '미배차' else 'bg-slate-800 text-white' }}">{{ o.payout_check }}</span></td>
-                        <td onclick="openLogModal({{o.id}})" class="font-black">{{ o.client_name }}</td>
-                        <td onclick="openLogModal({{o.id}})">
-                            <div class="font-black text-blue-600">{{ o.driver_name or '미배정' }}</div>
-                            <div class="text-[10px] text-slate-400">{{ o.car_num }}</div>
-                        </td>
-                        <td onclick="openLogModal({{o.id}})" class="font-bold text-slate-700">{{ o.load_loc }} ➔ {{ o.unload_loc }}</td>
-                        <td onclick="openLogModal({{o.id}})" class="text-right font-black text-orange-600">{{ "{:,}".format(o.driver_fare) }}원</td>
-                        <td class="flex gap-2 justify-center" onclick="event.stopPropagation()">
-                            <button onclick="openDispatchModal({{o.id}}, '{{o.client_name}}', {{o.shipper_fare}}, {{o.driver_fare}}, '{{o.load_loc}}', '{{o.unload_loc}}', '{{o.driver_name or ''}}', '{{o.car_num or ''}}', '{{o.driver_phone or ''}}', '{{o.driver_account or ''}}', '{{o.payout_check}}', '', '', '{{o.driver_biz_num}}', '{{o.driver_biz_name}}', '{{o.order_memo}}')" 
-                                    class="bg-blue-600 text-white px-4 py-2 rounded-xl text-[11px] font-black shadow-lg">수정</button>
-                            <button onclick="copyWorkLink({{o.id}})" class="bg-emerald-100 text-emerald-700 px-3 py-2 rounded-xl text-[10px] font-black hover:bg-emerald-200 transition-all">
-                                <i class="fa-solid fa-link"></i> 링크복사
-                            </button>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </section>
-        {% endif %}
-
-        {% if tab == 'client' or tab == 'driver' %}
-        <section class="space-y-6">
-            <div class="glass-card p-6 border-t-8 border-indigo-600 bg-indigo-50/20">
-                <h3 class="font-black mb-4"><i class="fa-solid fa-file-excel mr-2 text-indigo-600"></i> {{ tab|upper }} 엑셀 대량 업로드</h3>
-                <form action="/upload/{{ tab }}" method="POST" enctype="multipart/form-data" class="flex gap-4">
-                    <input type="file" name="file" class="bg-white p-3 rounded-xl flex-1 font-bold border-2 border-dashed border-indigo-200">
-                    <button class="bg-indigo-600 text-white px-10 rounded-xl font-black shadow-lg">업로드 실행</button>
-                </form>
-            </div>
-            <div class="glass-card overflow-hidden">
-                <table class="w-full text-xs">
-                    {% if tab == 'client' %}
-                    <thead><tr><th>업체명</th><th>사업자번호</th><th>대표자</th><th>연락처</th><th>주소</th><th>관리</th></tr></thead>
-                    <tbody>
-                        {% for c in clients %}
-                        <tr class="hover:bg-indigo-50/50">
-                            <td class="font-black text-indigo-600">{{ c.company }}</td><td>{{ c.biz_num }}</td><td>{{ c.owner_name }}</td><td>{{ c.phone }}</td><td class="max-w-[200px] truncate">{{ c.address }}</td>
-                            <td><button onclick="openClientEditModal({{c.id}},'','{{c.company}}','','{{c.biz_num}}','','','{{c.address}}','','','{{c.email}}','','{{c.phone}}','')" class="text-blue-600 font-bold underline">수정</button></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                    {% else %}
-                    <thead><tr><th>기사명</th><th>차량번호</th><th>연락처</th><th>계좌정보</th><th>관리</th></tr></thead>
-                    <tbody>
-                        {% for d in drivers %}
-                        <tr class="hover:bg-slate-50">
-                            <td class="font-black text-blue-700">{{ d.name }}</td><td class="font-bold">{{ d.car_num }}</td><td>{{ d.phone }}</td><td>{{ d.account }}</td>
-                            <td><button onclick="openDriverEditModal({{d.id}},'{{d.name}}','{{d.car_num}}','{{d.phone}}','{{d.account}}','','','','')" class="text-blue-600 font-bold underline">수정</button></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                    {% endif %}
-                </table>
-            </div>
-        </section>
-        {% endif %}
-    </div>
-
-    <div id="logModal" class="modal">
-        <div class="bg-white max-w-2xl w-full p-8 rounded-[2.5rem] shadow-2xl mx-4">
-            <h3 class="text-2xl font-black mb-6 italic text-slate-800 uppercase">Order Detailed Log</h3>
-            <div id="log_content" class="max-h-[300px] overflow-y-auto space-y-3 mb-6 pr-2 border-y py-4 border-slate-100 text-xs"></div>
-            <div class="grid grid-cols-2 gap-4">
-                <form action="" id="shipperPayForm" method="POST" class="bg-blue-50 p-6 rounded-3xl border border-blue-100">
-                    <input type="hidden" name="action" value="shipper_pay"><input type="hidden" name="current_tab" value="{{tab}}">
-                    <button class="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg">입금 확인 완료</button>
-                </form>
-                <form action="" id="driverPayForm" method="POST" class="bg-orange-50 p-6 rounded-3xl border border-orange-100">
-                    <input type="hidden" name="action" value="driver_payout"><input type="hidden" name="current_tab" value="{{tab}}">
-                    <button class="w-full bg-orange-600 text-white py-4 rounded-2xl font-black shadow-lg">지급 처리 완료</button>
-                </form>
-            </div>
-            <button onclick="closeModal()" class="w-full mt-6 py-2 text-slate-400 font-bold">창 닫기</button>
-        </div>
-    </div>
-
-    <div id="dispatchModal" class="modal">
-        <div class="bg-white max-w-2xl w-full p-8 rounded-[2.5rem] shadow-2xl mx-4 border-t-8 border-orange-600 overflow-y-auto max-h-[90vh]">
-            <h3 class="text-xl font-black mb-6 uppercase text-orange-600 text-center italic">배차 및 운송정보 수정</h3>
-            <form action="" id="dispatchForm" method="POST" class="grid grid-cols-2 gap-4">
-                <input type="hidden" name="payout_check" id="d_status_input" value="배차완료">
-                <div class="col-span-2 space-y-2 bg-slate-50 p-4 rounded-2xl border">
-                    <label class="form-label text-orange-600 font-black">🚛 노선 정보 수정</label>
-                    <div class="flex items-center gap-2"><input type="text" id="d_load" name="load_loc" class="flex-1 form-input border-emerald-200" placeholder="상차"><i class="fa-solid fa-arrow-right text-slate-300"></i><input type="text" id="d_unload" name="unload_loc" class="flex-1 form-input border-orange-200" placeholder="하차"></div>
-                </div>
-                <div class="col-span-1"><label class="form-label">기사명(검색)</label><input type="text" id="d_search" name="driver_name" class="form-input bg-blue-50"></div>
-                <div class="col-span-1"><label class="form-label">차량번호</label><input type="text" id="d_car" name="car_num" class="form-input bg-blue-50"></div>
-                <div class="col-span-1"><label class="form-label text-blue-600 font-black">화주운임</label><input type="number" id="d_sfare" name="shipper_fare" class="form-input border-blue-200 font-black text-blue-700"></div>
-                <div class="col-span-1"><label class="form-label text-orange-600 font-black">기사운임</label><input type="number" id="d_dfare" name="driver_fare" class="form-input border-orange-200 font-black text-orange-700"></div>
-                <div class="col-span-2 flex gap-3 mt-4">
-                    <button type="submit" onclick="setStatus('배차완료')" class="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg">배차정보 저장</button>
-                    <button type="button" onclick="closeModal()" class="flex-1 bg-slate-200 py-4 rounded-2xl font-black">닫기</button>
-                </div>
-            </form>
-            <div id="complete_section" class="mt-8 pt-8 border-t-2 border-dashed border-slate-100 hidden text-center">
-                <h4 class="text-sm font-black text-emerald-600 mb-4 uppercase">Evidence Submission</h4>
-                <form id="completeForm" action="" method="POST" enctype="multipart/form-data" class="grid grid-cols-2 gap-4">
-                    <input type="file" name="driver_waybill_img" class="text-[10px]"><input type="file" name="driver_tax_img" class="text-[10px]">
-                    <button type="submit" class="col-span-2 bg-emerald-600 text-white py-4 rounded-2xl font-black shadow-xl hover:bg-emerald-700 transition-colors">최종 배송 완료 및 제출</button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <div id="clientEditModal" class="modal"><div class="bg-white max-w-4xl w-full p-8 rounded-[2.5rem] border-t-8 border-indigo-600"><h3 class="text-xl font-black mb-6 italic">거래처 정보 수정</h3><form id="clientEditForm" method="POST" class="grid grid-cols-2 md:grid-cols-4 gap-4"><input type="text" name="company" id="e_c_company" class="form-input" placeholder="업체명"><input type="text" name="biz_num" id="e_c_biz_num" class="form-input" placeholder="사업자번호"><input type="text" name="phone" id="e_c_phone" class="form-input" placeholder="연락처"><input type="text" name="address" id="e_c_address" class="form-input col-span-2" placeholder="주소"><input type="text" name="email" id="e_c_email" class="form-input" placeholder="이메일"><div class="col-span-4 flex gap-2 mt-4"><button type="submit" class="flex-1 bg-indigo-600 text-white py-4 rounded-xl font-black">업데이트</button><button type="button" onclick="closeModal()" class="flex-1 bg-slate-200 py-4 rounded-xl font-black">취소</button></div></form></div></div>
-    <div id="driverEditModal" class="modal"><div class="bg-white max-w-2xl w-full p-8 rounded-[2.5rem] border-t-8 border-slate-900"><h3 class="text-xl font-black mb-6 italic">기사 정보 수정</h3><form id="driverEditForm" method="POST" class="grid grid-cols-2 gap-4"><input type="text" name="name" id="e_d_name" class="form-input" placeholder="기사명"><input type="text" name="car_num" id="e_d_car" class="form-input" placeholder="차량번호"><input type="text" name="phone" id="e_d_phone" class="form-input" placeholder="연락처"><input type="text" name="account" id="e_d_account" class="form-input" placeholder="계좌번호"><div class="col-span-2 flex gap-2 mt-4"><button type="submit" class="flex-1 bg-slate-900 text-white py-4 rounded-xl font-black">수정 완료</button><button type="button" onclick="closeModal()" class="flex-1 bg-slate-200 py-4 rounded-xl font-black">취소</button></div></form></div></div>
-
-    <script>
-        $(document).ready(function() {
-            $("#c_search").autocomplete({
-                source: "/api/autocomplete/client",
-                select: function(e, ui) {
-                    $("#c_search").val(ui.item.value); $("#c_biz").val(ui.item.biz);
-                    $("#c_phone").val(ui.item.phone); $("#c_email").val(ui.item.email);
-                    $("#c_addr").val(ui.item.addr); $("#c_status").val(ui.item.status); return false;
-                }
-            });
-            $("#d_search").autocomplete({
-                source: "/api/autocomplete/driver",
-                select: function(e, ui) {
-                    $("#d_search").val(ui.item.value); $("#d_car").val(ui.item.car);
-                }
-            });
-
-            // 드래그 앤 드롭(Sortable) 초기화
-            $(".sortable-dashboard").sortable({
-                placeholder: "ui-sortable-placeholder",
-                tolerance: "pointer"
-            }).disableSelection();
-        });
-
-        // 뷰 토글 함수 (테이블 vs 그림판 배열)
-        function toggleView(mode) {
-            if(mode === 'table') {
-                $("#dashboard_table_view").show();
-                $("#dashboard_grid_view").hide();
-                $("#view_table").addClass("bg-blue-600 text-white").removeClass("bg-white text-black");
-                $("#view_grid").addClass("bg-white text-black border border-blue-200").removeClass("bg-blue-600 text-white");
-            } else {
-                $("#dashboard_table_view").hide();
-                $("#dashboard_grid_view").show().css("display", "grid");
-                $("#view_grid").addClass("bg-blue-600 text-white").removeClass("bg-white text-black");
-                $("#view_table").addClass("bg-white text-black border border-blue-200").removeClass("bg-blue-600 text-white");
-            }
-        }
-
-        // 카드 크기 축소/확대 토글
-        function toggleCardSize(el) {
-            $(el).toggleClass("card-shrunken");
-            $(el).find(".card-details").toggle();
-        }
-
-        function setStatus(st) { $("#d_status_input").val(st); }
-        function copyWorkLink(id) {
-            const link = window.location.origin + "/work/direct/" + id;
-            const t = document.createElement("input"); t.value = link; document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t);
-            alert("기사 전용 링크 복사됨: " + link);
-        }
-        function openLogModal(id) {
-            $("#shipperPayForm").attr("action", "/api/order_settle/"+id);
-            $("#driverPayForm").attr("action", "/api/order_settle/"+id);
-            $("#logModal").css("display","flex").fadeIn(100); 
-            fetch('/api/order_logs/'+id).then(r=>r.json()).then(data=>{
-                let html = data.logs.map(l=>`<div class='p-3 bg-slate-50 rounded-2xl mb-2'><p class='text-[10px] text-slate-400'>${l.time}</p><p class='font-black text-xs text-slate-700'>[${l.status}] ${l.msg}</p></div>`).join('');
-                $("#log_content").html(html || "기기록 없음");
-            });
-        }
-        function openDispatchModal(id, client, s_fare, d_fare, load, unload, d_name, car, phone, acc, status, p_method, p_date, biz_num, biz_name, memo) {
-            $("#dispatchForm").attr("action", "/order/dispatch/"+id);
-            $("#completeForm").attr("action", "/order/complete/"+id);
-            $("#d_sfare").val(s_fare); $("#d_dfare").val(d_fare);
-            $("#d_load").val(load); $("#d_unload").val(unload);
-            $("#d_search").val(d_name); $("#d_car").val(car);
-            if(status === '배차완료' || status === '기사상차') { $("#complete_section").show(); } else { $("#complete_section").hide(); }
-            $("#dispatchModal").css("display","flex").fadeIn(100);
-        }
-        function openClientEditModal(id, bt, co, it, bn, bnm, onm, ad, bs, bi, em, mg, ph, pm) {
-            $("#clientEditForm").attr("action", "/api/edit/client/" + id);
-            $("#e_c_company").val(co); $("#e_c_biz_num").val(bn); $("#e_c_phone").val(ph); $("#e_c_address").val(ad); $("#e_c_email").val(em);
-            $("#clientEditModal").css("display", "flex");
-        }
-        function openDriverEditModal(id, n, c, p, a, b, bn, f, m) {
-            $("#driverEditForm").attr("action", "/api/edit/driver/" + id);
-            $("#e_d_name").val(n); $("#e_d_car").val(c); $("#e_d_phone").val(p); $("#e_d_account").val(a);
-            $("#driverEditModal").css("display", "flex");
-        }
-        function closeModal() { $(".modal").hide(); }
-    </script>
-</body>
-</html>
-"""
-
-DRIVER_LOGIN_HTML = """
-<!DOCTYPE html>
-<html lang="ko">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>SM DRIVER LOGIN</title><script src="https://cdn.tailwindcss.com"></script></head>
-<body class="bg-slate-900 flex items-center justify-center min-h-screen p-6"><div class="w-full max-w-sm bg-slate-800 p-8 rounded-[3rem] border border-slate-700 text-center shadow-2xl">
-    <h1 class="text-3xl font-black text-blue-500 mb-8 italic uppercase tracking-widest underline decoration-white">SM DRIVER LOGIN</h1>
-    <form action="/work" method="GET" class="space-y-4">
-        <input type="text" name="name" placeholder="기사님 성함" class="w-full p-5 rounded-2xl bg-slate-900 text-white font-black text-center" required>
-        <button class="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-xl shadow-xl active:scale-95 transition-all">업무 리스트 확인</button>
-    </form>
-</div></body>
-</html>
-"""
-
-DRIVER_WORK_HTML = """
-<!DOCTYPE html>
-<html lang="ko">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>배송 업무 - {{ driver.name }}</title><script src="https://cdn.tailwindcss.com"></script></head>
-<body class="bg-slate-50 pb-20">
-    <div class="bg-slate-900 text-white p-6 rounded-b-[2.5rem] shadow-xl sticky top-0 z-50 flex justify-between items-center">
-        <h1 class="text-xl font-black">{{ driver.name }} <span class="text-slate-400 text-xs font-light">[{{ driver.car_num }}]</span></h1>
-    </div>
-    <div class="p-4 space-y-6">
-        {% for t in tasks %}
-        <div class="bg-white p-6 rounded-[2.5rem] shadow-lg border border-slate-100">
-            <div class="flex justify-between items-center mb-2"><span class="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-[10px] font-black">{{ t.payout_check }}</span><span class="text-[10px] text-slate-300 font-bold">{{ t.order_date }}</span></div>
-            <h3 class="text-xl font-black mb-4">{{ t.load_loc }} ➔ {{ t.unload_loc }}</h3>
-            <p class="text-xs text-slate-400 mb-4 font-bold">{{ t.client_name }}</p>
-            <form action="/api/work_update/{{ t.id }}" method="POST" enctype="multipart/form-data" class="space-y-4">
-                <div class="grid grid-cols-2 gap-3">
-                    <div><label class="text-[10px] font-black text-slate-400 uppercase text-center block">픽업 시간</label><input type="time" name="actual_load_time" value="{{ t.actual_load_time }}" class="w-full p-4 bg-slate-50 rounded-2xl font-black border-none text-center"></div>
-                    <div><label class="text-[10px] font-black text-slate-400 uppercase text-center block">완료 시간</label><input type="time" name="actual_unload_time" value="{{ t.actual_unload_time }}" class="w-full p-4 bg-slate-50 rounded-2xl font-black border-none text-center"></div>
-                </div>
-                <div class="grid grid-cols-2 gap-3">
-                    <label class="bg-blue-50 p-4 rounded-2xl text-center cursor-pointer active:bg-blue-100"><span class="text-[11px] font-black text-blue-600 block">📸 인수증</span><input type="file" name="driver_waybill_img" class="hidden" accept="image/*" capture="camera"></label>
-                    <label class="bg-orange-50 p-4 rounded-2xl text-center cursor-pointer active:bg-orange-100"><span class="text-[11px] font-black text-orange-600 block">📸 계산서</span><input type="file" name="driver_tax_img" class="hidden" accept="image/*" capture="camera"></label>
-                </div>
-                <button class="w-full bg-slate-900 text-white py-5 rounded-[2rem] font-black shadow-lg active:scale-95 transition-all">업무 완료 업데이트</button>
-            </form>
-        </div>
-        {% endfor %}
-    </div>
-</body>
-</html>
-"""
-
-DRIVER_DIRECT_WORK_HTML = """
+BASE_HTML = """
 <!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>SM로지텍 증빙제출</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <title>바구니삼촌 통합 정산 시스템 v10</title>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; margin: 10px; font-size: 11px; background: #f0f2f5; }
+        .nav { background: #1a2a6c; padding: 10px; border-radius: 5px; margin-bottom: 15px; display: flex; gap: 15px; }
+        .nav a { color: white; text-decoration: none; font-weight: bold; }
+        .section { background: white; padding: 15px; border-radius: 5px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .scroll-x { overflow-x: auto; max-width: 100%; border: 1px solid #ccc; background: white; }
+        table { border-collapse: collapse; width: 100%; white-space: nowrap; }
+        th, td { border: 1px solid #dee2e6; padding: 4px; text-align: center; }
+        th { background: #f8f9fa; position: sticky; top: 0; z-index: 5; }
+        input[type="text"], input[type="number"], input[type="date"], input[type="datetime-local"] { width: 110px; border: 1px solid #ddd; padding: 3px; font-size: 11px; }
+        input[type="checkbox"] { transform: scale(1.1); }
+        .btn-save { background: #27ae60; color: white; padding: 10px 25px; border: none; border-radius: 3px; cursor: pointer; font-weight: bold; font-size: 13px; }
+        .btn-edit { background: #f39c12; color: white; padding: 2px 5px; border: none; border-radius: 2px; cursor: pointer; }
+        .btn-status { padding: 4px 8px; border: none; border-radius: 3px; cursor: pointer; font-weight: bold; color: white; font-size: 10px; }
+        .bg-red { background: #e74c3c; }
+        .bg-green { background: #2ecc71; }
+        .bg-orange { background: #f39c12; }
+        .bg-gray { background: #95a5a6; cursor: not-allowed; }
+        .search-bar { padding: 8px; width: 300px; border: 2px solid #1a2a6c; border-radius: 4px; margin-bottom: 10px; }
+        .filter-box { background: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .draggable { cursor: move; }
+        .draggable.dragging { opacity: 0.5; background: #e9ecef; }
+        .memo-board { height: 120px; background: #dfe6e9; border: 2px dashed #b2bec3; position: relative; margin-bottom: 15px; border-radius: 5px; }
+        .sticky-note { position: absolute; width: 140px; background: #fff9c4; border: 1px solid #fbc02d; padding: 5px; cursor: move; z-index: 100; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); border-radius: 3px; }
+        .search-results { position: absolute; background: white; border: 1px solid #ccc; z-index: 1000; max-height: 200px; overflow-y: auto; display: none; }
+        .search-item { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+        .quick-order-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 10px; }
+        .quick-order-grid label { font-weight: bold; margin-bottom: 3px; color: #1a2a6c; }
+    </style>
 </head>
-<body class="bg-slate-950 text-white p-4">
-    <div class="max-w-md mx-auto py-6">
-        <div class="text-center mb-6">
-            <h1 class="text-2xl font-black text-blue-500 italic tracking-tighter">SM LOGITECHS</h1>
-            <p class="text-slate-500 text-xs mt-1 font-bold italic text-white underline decoration-blue-500">배송 증빙 다이렉트 업로드</p>
-        </div>
-        <div class="bg-slate-900 rounded-[2.5rem] p-6 shadow-2xl border border-slate-800">
-            <div class="mb-8 bg-slate-950/50 p-5 rounded-3xl border border-slate-800">
-                <p class="text-[10px] text-blue-400 font-black mb-1">운송 요약</p>
-                <h2 class="text-xl font-black mb-2">{{ t.load_loc }} ➔ {{ t.unload_loc }}</h2>
-                <div class="flex justify-between text-xs font-bold text-slate-400">
-                    <span>{{ t.client_name }}</span>
-                    <span class="text-blue-500 font-black">{{ t.driver_name }} 기사님</span>
-                </div>
-            </div>
-            <form action="/api/work_update/{{ t.id }}" method="POST" enctype="multipart/form-data" class="space-y-6">
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="space-y-2">
-                        <label class="text-[10px] font-black text-slate-500 ml-2 italic uppercase">상차 시간</label>
-                        <input type="time" name="actual_load_time" value="{{ t.actual_load_time or '' }}" class="w-full p-4 bg-slate-950 rounded-2xl text-white font-black text-center border border-slate-800 focus:border-blue-500 outline-none">
-                    </div>
-                    <div class="space-y-2">
-                        <label class="text-[10px] font-black text-slate-500 ml-2 italic uppercase">하차 시간</label>
-                        <input type="time" name="actual_unload_time" value="{{ t.actual_unload_time or '' }}" class="w-full p-4 bg-slate-950 rounded-2xl text-white font-black text-center border border-slate-800 focus:border-blue-500 outline-none">
-                    </div>
-                </div>
-                <div class="space-y-4">
-                    <label class="block cursor-pointer">
-                        <div class="flex items-center justify-between p-5 bg-slate-950 rounded-3xl border-2 border-dashed {{ 'border-emerald-500 bg-emerald-500/5' if t.driver_waybill_img else 'border-slate-800' }}">
-                            <div class="flex items-center gap-3"><i class="fa-solid fa-camera {{ 'text-emerald-500' if t.driver_waybill_img else 'text-slate-600' }}"></i><span class="font-black text-sm">인수증(운송장)</span></div>
-                            <span class="text-[10px] font-black text-blue-500">{{ '업로드 완료' if t.driver_waybill_img else '사진 촬영' }}</span>
-                        </div>
-                        <input type="file" name="driver_waybill_img" class="hidden" accept="image/*" capture="camera">
-                    </label>
-                    <label class="block cursor-pointer">
-                        <div class="flex items-center justify-between p-5 bg-slate-950 rounded-3xl border-2 border-dashed {{ 'border-orange-500 bg-orange-500/5' if t.driver_tax_img else 'border-slate-800' }}">
-                            <div class="flex items-center gap-3"><i class="fa-solid fa-file-invoice {{ 'text-orange-500' if t.driver_tax_img else 'text-slate-600' }}"></i><span class="font-black text-sm">기사 계산서</span></div>
-                            <span class="text-[10px] font-black text-blue-500">{{ '업로드 완료' if t.driver_tax_img else '사진 촬영' }}</span>
-                        </div>
-                        <input type="file" name="driver_tax_img" class="hidden" accept="image/*" capture="camera">
-                    </label>
-                </div>
-                <button type="submit" class="w-full bg-blue-600 text-white py-5 rounded-[2rem] font-black text-lg shadow-xl shadow-blue-900/20 active:scale-95 transition-all">업무 기록 업데이트</button>
-            </form>
-        </div>
+<body>
+    <div class="nav">
+        <a href="/">통합장부입력</a>
+        <a href="/settlement">정산관리</a>
+        <a href="/manage_drivers">기사관리</a>
+        <a href="/manage_clients">업체관리</a>
     </div>
+    <div class="container">{{ content_body | safe }}</div>
+    <div id="search-popup" class="search-results"></div>
+
     <script>
-        document.querySelectorAll('input[type="file"]').forEach(input => {
-            input.addEventListener('change', function() {
-                if(this.files.length > 0) {
-                    const labelDiv = this.previousElementSibling;
-                    labelDiv.classList.add('border-blue-500', 'bg-blue-500/10');
-                    labelDiv.querySelector('span:last-child').innerText = "사진 찍기 완료";
+        let drivers = {{ drivers_json | safe }};
+        let clients = {{ clients_json | safe }};
+        let columnKeys = {{ col_keys | safe }};
+        let lastLedgerData = [];
+        let currentEditId = null;
+
+        const getChosung = (str) => {
+            const cho = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"];
+            let res = "";
+            for(let i=0; i<str.length; i++) {
+                let code = str.charCodeAt(i) - 44032;
+                if(code>-1 && code<11172) res += cho[Math.floor(code/588)];
+                else res += str.charAt(i);
+            }
+            return res;
+        };
+
+        document.addEventListener('input', function(e) {
+            if(e.target.classList.contains('driver-search') || e.target.classList.contains('client-search')) {
+                const isDriver = e.target.classList.contains('driver-search');
+                const val = e.target.value.toLowerCase();
+                const db = isDriver ? drivers : clients;
+                const popup = document.getElementById('search-popup');
+                if(val.length < 1) { popup.style.display = 'none'; return; }
+                const filtered = db.filter(item => {
+                    const target = isDriver ? (item.기사명 + item.차량번호) : item.업체명;
+                    return target.toLowerCase().includes(val) || getChosung(target).includes(val);
+                });
+                if(filtered.length > 0) {
+                    const rect = e.target.getBoundingClientRect();
+                    popup.style.display = 'block'; popup.style.top = (rect.bottom + window.scrollY) + 'px'; popup.style.left = rect.left + 'px'; popup.style.width = rect.width + 'px';
+                    popup.innerHTML = filtered.map(item => `<div class="search-item" onclick='fillData(${JSON.stringify(item)}, "${isDriver?'driver':'client'}", "${e.target.id}")'>${isDriver ? item.기사명+' ['+item.차량번호+']' : item.업체명}</div>`).join('');
+                } else { popup.style.display = 'none'; }
+            }
+        });
+
+        window.fillData = function(item, type, targetInputId) {
+            const prefix = targetInputId.startsWith('q_') ? 'q_' : '';
+            if(type === 'driver') {
+                document.querySelector(`input[name="${prefix}d_name"]`).value = item.기사명 || '';
+                document.querySelector(`input[name="${prefix}c_num"]`).value = item.차량번호 || '';
+            } else {
+                document.querySelector(`input[name="${prefix}client_name"]`).value = item.업체명 || '';
+            }
+            document.getElementById('search-popup').style.display = 'none';
+        };
+
+        function loadLedgerList() {
+            const body = document.getElementById('ledgerBody');
+            if (!body) return; 
+            fetch('/api/get_ledger').then(r => r.json()).then(data => {
+                lastLedgerData = data;
+                renderTableRows(data);
+            });
+        }
+
+        function saveLedger(formId) {
+            const form = document.getElementById(formId);
+            const formData = new FormData(form);
+            const data = {};
+            const isQuick = (formId === 'quickOrderForm');
+
+            formData.forEach((v, k) => {
+                const key = isQuick ? k.replace('q_', '') : k;
+                const input = form.querySelector(`[name="${k}"]`);
+                if (input && input.type === 'checkbox') data[key] = input.checked ? "✅" : "❌";
+                else data[key] = v;
+            });
+            
+            if(isQuick) {
+                const client = clients.find(c => c.업체명 === data.client_name);
+                if(client) {
+                    data.c_phone = client.연락처 || ''; data.biz_num = client.사업자등록번호 || ''; 
+                    data.biz_addr = client.사업자주소 || ''; data.biz_owner = client.대표자명 || '';
+                }
+                const driver = drivers.find(d => d.기사명 === data.d_name && d.차량번호 === data.c_num);
+                if(driver) {
+                    data.d_phone = driver.연락처 || ''; data.bank_acc = driver.계좌번호 || ''; 
+                    data.tax_biz_num = driver.사업자번호 || ''; data.tax_biz_name = driver.사업자 || '';
+                }
+                data.order_dt = data.order_dt || new Date().toISOString().split('T')[0];
+                data.dispatch_dt = data.dispatch_dt || new Date().toISOString().slice(0,16);
+            }
+
+            if (currentEditId) data['id'] = currentEditId;
+
+            fetch('/api/save_ledger', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+            }).then(r => r.json()).then(res => {
+                if(res.status === 'success') {
+                    currentEditId = null; 
+                    form.reset();
+                    loadLedgerList(); 
                 }
             });
-        });
+        }
+
+        function renderTableRows(data) {
+            const body = document.getElementById('ledgerBody');
+            if (!body) return;
+            body.innerHTML = data.map(item => `
+                <tr class="draggable" draggable="true" data-id="${item.id}">
+                    <td><button class="btn-edit" onclick="editEntry(${item.id})">수정</button></td>
+                    ${columnKeys.map(key => `<td>${item[key] || ''}</td>`).join('')}
+                </tr>
+            `).join('');
+            initDraggable();
+        }
+
+        function initDraggable() {
+            const body = document.getElementById('ledgerBody');
+            if(!body) return;
+            const draggables = document.querySelectorAll('.draggable');
+            draggables.forEach(draggable => {
+                draggable.addEventListener('dragstart', () => draggable.classList.add('dragging'));
+                draggable.addEventListener('dragend', () => draggable.classList.remove('dragging'));
+            });
+            body.addEventListener('dragover', e => {
+                e.preventDefault();
+                const afterElement = getDragAfterElement(body, e.clientY);
+                const dragging = document.querySelector('.dragging');
+                if (afterElement == null) body.appendChild(dragging);
+                else body.insertBefore(dragging, afterElement);
+            });
+        }
+
+        function getDragAfterElement(container, y) {
+            const draggableElements = [...container.querySelectorAll('.draggable:not(.dragging)')];
+            return draggableElements.reduce((closest, child) => {
+                const box = child.getBoundingClientRect();
+                const offset = y - box.top - box.height / 2;
+                if (offset < 0 && offset > closest.offset) return { offset: offset, element: child };
+                else return closest;
+            }, { offset: Number.NEGATIVE_INFINITY }).element;
+        }
+
+        function filterLedger() {
+            const query = document.getElementById('ledgerSearch').value.toLowerCase();
+            const filtered = lastLedgerData.filter(item => Object.values(item).some(val => String(val).toLowerCase().includes(query)));
+            renderTableRows(filtered);
+        }
+
+        window.editEntry = function(id) {
+            const item = lastLedgerData.find(d => d.id === id);
+            if (!item) return;
+            currentEditId = id; 
+            document.querySelector('#ledgerForm .btn-save').innerText = '장부 내용 수정 완료';
+            columnKeys.forEach(key => {
+                const input = document.querySelector(`#ledgerForm [name="${key}"]`);
+                if (input) { if (input.type === 'checkbox') input.checked = (item[key] === "✅"); else input.value = item[key] || ''; }
+            });
+            window.scrollTo(0, document.querySelector('#ledgerForm').offsetTop - 50);
+        };
+
+        // 정산관리용 상태 변경 함수 (원천 데이터 수정)
+        window.changeStatus = function(id, key, val) {
+            fetch('/api/update_status', { 
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'}, 
+                body: JSON.stringify({id: id, key: key, value: val}) 
+            }).then(() => location.reload());
+        };
+
+        window.onload = loadLedgerList;
+
+        function addMemo() {
+            const board = document.getElementById('memoBoard'); if(!board) return;
+            const note = document.createElement('div'); note.className = 'sticky-note'; note.style.left = '50px'; note.style.top = '30px';
+            note.innerHTML = `<div style="font-size:10px; font-weight:bold; border-bottom:1px solid #fbc02d; margin-bottom:3px;">메모 <span style="float:right; cursor:pointer;" onclick="this.parentElement.parentElement.remove()">×</span></div>
+                              <input type="text" placeholder="기사/배송지" style="width:100%; border:none; background:transparent; font-size:10px;">
+                              <input type="text" placeholder="도착시간" style="width:100%; border:none; background:transparent; font-size:10px;">`;
+            board.appendChild(note); dragElement(note);
+        }
+
+        function dragElement(elmnt) {
+            let p1=0, p2=0, p3=0, p4=0;
+            elmnt.onmousedown = (e) => { e.preventDefault(); p3=e.clientX; p4=e.clientY; document.onmouseup=()=>document.onmousemove=null; document.onmousemove=(e)=>{
+                e.preventDefault(); p1=p3-e.clientX; p2=p4-e.clientY; p3=e.clientX; p4=e.clientY; elmnt.style.top=(elmnt.offsetTop-p2)+"px"; elmnt.style.left=(elmnt.offsetLeft-p1)+"px";
+            }};
+        }
     </script>
 </body>
 </html>
 """
 
+@app.route('/')
+def index():
+    col_keys_json = json.dumps([c['k'] for c in FULL_COLUMNS])
+    content = f"""
+    <div class="memo-board" id="memoBoard">
+        <button onclick="addMemo()" style="margin:10px; cursor:pointer;">+ 퀵 메모</button>
+        <small style="color:#636e72;">배송 상황을 메모하고 마우스로 옮기세요.</small>
+    </div>
+    
+    <div class="section" style="background:#fff9c4; border:2px solid #fbc02d;">
+        <h3>⚡ 빠른 오더 입력 (원천 장부 목록으로 전송)</h3>
+        <form id="quickOrderForm">
+            <div class="quick-order-grid">
+                <div><label>업체명</label><input type="text" name="q_client_name" id="q_client_name" class="client-search" placeholder="초성검색..."></div>
+                <div><label>노선</label><input type="text" name="q_route" placeholder="상차-하차"></div>
+                <div><label>업체운임</label><input type="number" name="q_fee" placeholder="0"></div>
+                <div><label>기사명</label><input type="text" name="q_d_name" id="q_d_name" class="driver-search" placeholder="이름입력"></div>
+                <div><label>차량번호</label><input type="text" name="q_c_num" id="q_c_num" class="driver-search" placeholder="차량번호"></div>
+                <div><label>기사운임</label><input type="number" name="q_fee_out" placeholder="0"></div>
+            </div>
+            <div style="text-align:right;">
+                <button type="button" class="btn-save" style="background:#e67e22;" onclick="saveLedger('quickOrderForm')">장부 즉시 등록</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="section">
+        <h3>1. 장부 상세 데이터 입력 (56개 전체 항목 관리)</h3>
+        <form id="ledgerForm">
+            <div class="scroll-x">
+                <table>
+                    <thead><tr><th>관리</th>{"".join([f"<th>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead>
+                    <tbody>
+                        <tr><td>-</td>{"".join([f"<td><input type='{c.get('t', 'text')}' name='{c['k']}' class='{c.get('c', '')}'></td>" for c in FULL_COLUMNS])}</tr>
+                    </tbody>
+                </table>
+            </div>
+            <div style="text-align:right; margin-top:15px;"><button type="button" class="btn-save" onclick="saveLedger('ledgerForm')">상세 저장 및 추가 ↓</button></div>
+        </form>
+    </div>
+
+    <div class="section">
+        <h3>2. 장부 목록 (원천 데이터 저장소 - 실시간 갱신)</h3>
+        <input type="text" id="ledgerSearch" class="search-bar" placeholder="실시간 목록 검색 (업체, 기사명 등)..." onkeyup="filterLedger()">
+        <div class="scroll-x"><table id="resultTable"><thead><tr><th>관리</th>{"".join([f"<th>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
+    </div>
+    """
+    return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys=col_keys_json)
+
+@app.route('/settlement')
+def settlement():
+    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    q_status = request.args.get('status', ''); q_start = request.args.get('start', ''); q_end = request.args.get('end', ''); q_name = request.args.get('name', '')
+    rows = conn.execute("SELECT * FROM ledger ORDER BY dispatch_dt DESC").fetchall(); conn.close()
+    table_rows = ""; today = datetime.now()
+
+    for row in rows:
+        # 업체 수금 판별 로직
+        has_in_dt = bool(row['in_dt']); has_prepost = bool(row['pre_post']); has_paydue = bool(row['pay_due_dt'])
+        order_date = None
+        try: order_date = datetime.strptime(row['order_dt'], '%Y-%m-%d')
+        except: pass
+        is_over_30 = (order_date and (today - order_date).days >= 30)
+        
+        misu_status = "ok"
+        if not has_in_dt:
+            if not has_prepost and not is_over_30 and not has_paydue: misu_status = "conditional"
+            else: misu_status = "misu"
+        
+        can_pay = has_in_dt and bool(row['tax_img']) and bool(row['ship_img'])
+        has_out_dt = bool(row['out_dt'])
+
+        if q_status == 'misu' and (has_in_dt or misu_status == "ok"): continue
+        if q_status == 'pay' and (has_out_dt or not can_pay): continue
+        if q_name and q_name not in str(row['client_name']) and q_name not in str(row['d_name']): continue
+        if q_start and row['order_dt'] < q_start: continue
+        if q_end and row['order_dt'] > q_end: continue
+
+        misu_btn = '<button class="btn-status bg-green">수금완료</button>' if has_in_dt else f'<button class="btn-status {"bg-orange" if misu_status=="conditional" else "bg-red"}" onclick="changeStatus({row["id"]}, \'in_dt\', \'{today.strftime("%Y-%m-%d")}\')">{"조건부미수" if misu_status=="conditional" else "미수"}</button>'
+        pay_btn = '<button class="btn-status bg-green">지급완료</button>' if has_out_dt else (f'<button class="btn-status bg-red" onclick="changeStatus({row["id"]}, \'out_dt\', \'{today.strftime("%Y-%m-%d")}\')">미지급</button>' if can_pay else '<button class="btn-status bg-gray">지급대기</button>')
+        
+        upload_link = f'<a href="/upload_evidence/{row["id"]}" target="_blank" style="color:blue;">[증빙]</a>'
+        table_rows += f"<tr><td>{row['client_name']}</td><td>{row['order_dt']}</td><td>{row['dispatch_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{row['fee']}</td><td>{row['in_dt']}</td><td>{misu_btn}</td><td>{row['fee_out']}</td><td>{pay_btn}</td><td>{'✅' if row['tax_img'] else '❌'}{upload_link}</td><td>{'✅' if row['ship_img'] else '❌'}</td></tr>"
+
+    content = f"""<div class="section"><h2>정산 관리 (원천 데이터 기반 조회/수정)</h2><form class="filter-box" method="get">상태: <select name="status"><option value="">전체</option><option value="misu">미수금</option><option value="pay">기사미지급</option></select> 기간: <input type="date" name="start"> ~ <input type="date" name="end"> 이름: <input type="text" name="name" placeholder="거래처/기사명"> <button type="submit" class="btn">조회</button></form><div class="scroll-x"><table><thead><tr><th>거래처명</th><th>오더일</th><th>배차일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>업체운임</th><th>입금일</th><th>수금상태</th><th>기사운임</th><th>지급상태</th><th>계산서</th><th>운송장</th></tr></thead><tbody>{table_rows}</tbody></table></div></div>"""
+    return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
+
+@app.route('/api/save_ledger', methods=['POST'])
+def save_ledger():
+    data = request.json; conn = sqlite3.connect('ledger.db'); cursor = conn.cursor()
+    keys = [c['k'] for c in FULL_COLUMNS]
+    if 'id' in data:
+        update_sql = ", ".join([f"{k} = ?" for k in keys]); vals = [data.get(k, '') for k in keys] + [data['id']]
+        cursor.execute(f"UPDATE ledger SET {update_sql} WHERE id = ?", vals)
+    else:
+        vals = [data.get(k, '') for k in keys]; cursor.execute(f"INSERT INTO ledger ({', '.join(keys)}) VALUES ({', '.join(['?']*len(keys))})", vals)
+    conn.commit(); conn.close(); return jsonify({"status": "success"})
+
+@app.route('/api/get_ledger')
+def get_ledger():
+    conn = sqlite3.connect('ledger.db'); df = pd.read_sql("SELECT * FROM ledger ORDER BY id DESC", conn); conn.close()
+    return jsonify(df.to_dict('records'))
+
+@app.route('/api/update_status', methods=['POST'])
+def update_status():
+    data = request.json; conn = sqlite3.connect('ledger.db')
+    conn.execute(f"UPDATE ledger SET {data['key']} = ? WHERE id = ?", (data['value'], data['id']))
+    conn.commit(); conn.close(); return jsonify({"status": "success"})
+
+@app.route('/manage_drivers', methods=['GET', 'POST'])
+def manage_drivers():
+    global drivers_db
+    if request.method == 'POST' and 'file' in request.files:
+        file = request.files['file']
+        if file.filename != '':
+            df = pd.read_excel(file, engine='openpyxl') if file.filename.endswith(('.xlsx', '.xls')) else pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
+            df = df.fillna('').astype(str); conn = sqlite3.connect('ledger.db'); df.to_sql('drivers', conn, if_exists='replace', index=False); conn.commit(); conn.close(); load_db_to_mem()
+    rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in DRIVER_COLS])}</tr>" for r in drivers_db])
+    content = f"""<div class="section"><h2>기사 관리</h2><form method="post" enctype="multipart/form-data"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form><div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in DRIVER_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
+    return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
+
+@app.route('/manage_clients', methods=['GET', 'POST'])
+def manage_clients():
+    global clients_db
+    if request.method == 'POST' and 'file' in request.files:
+        file = request.files['file']
+        if file.filename != '':
+            try:
+                df = pd.read_excel(file, engine='openpyxl') if file.filename.endswith(('.xlsx', '.xls')) else pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
+                df = df.fillna('').astype(str); conn = sqlite3.connect('ledger.db'); df.to_sql('clients', conn, if_exists='replace', index=False); conn.commit(); conn.close(); load_db_to_mem()
+            except Exception as e: return f"업로드 오류: {str(e)}"
+    rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])}</tr>" for r in clients_db])
+    content = f"""<div class="section"><h2>업체 관리</h2><form method="post" enctype="multipart/form-data"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form><div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
+    return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
+
+@app.route('/upload_evidence/<int:ledger_id>', methods=['GET', 'POST'])
+def upload_evidence(ledger_id):
+    if request.method == 'POST':
+        tax_file = request.files.get('tax_file'); ship_file = request.files.get('ship_file'); conn = sqlite3.connect('ledger.db')
+        if tax_file:
+            path = os.path.join(UPLOAD_FOLDER, f"tax_{ledger_id}_{tax_file.filename}")
+            tax_file.save(path); conn.execute("UPDATE ledger SET tax_img = ? WHERE id = ?", (path, ledger_id))
+        if ship_file:
+            path = os.path.join(UPLOAD_FOLDER, f"ship_{ledger_id}_{ship_file.filename}")
+            ship_file.save(path); conn.execute("UPDATE ledger SET ship_img = ? WHERE id = ?", (path, ledger_id))
+        conn.commit(); conn.close()
+        return "<h3>업로드 완료되었습니다. 창을 닫아주세요.</h3>"
+    return f"""<h3>바구니삼촌 증빙 업로드</h3><form method="post" enctype="multipart/form-data"><p>1. 계산서 사진: <input type="file" name="tax_file" accept="image/*" capture="camera"></p><p>2. 운송장 사진: <input type="file" name="ship_file" accept="image/*" capture="camera"></p><button type="submit" style="padding:10px 20px; background:#007bff; color:white; border:none;">전송하기</button></form>"""
+
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-    # 배포 환경용 포트 설정 (로컬 환경은 8000 사용)
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', debug=True, port=5000)
