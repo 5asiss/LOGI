@@ -21,9 +21,10 @@ if not os.path.exists(upload_folder): os.makedirs(upload_folder)
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = upload_folder
-db.init_app(app)
-# 기존 코드: db.init_app(app) 아래에 추가
+db.init_app(app) 
 with app.app_context():
+# 기존 코드: db.init_app(app) 아래에 추가
+
     try:
         db.create_all()
         print("✅ 데이터베이스 테이블이 성공적으로 생성되었거나 이미 존재합니다.")
