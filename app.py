@@ -985,6 +985,6 @@ def manage_clients():
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
 if __name__ == '__main__':
-    # Render는 PORT 환경변수를 통해 포트를 지정합니다.
+    # 로컬에서 직접 실행할 때만 작동 (gunicorn으로 실행 시 이 블록은 건너뜁니다)
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
