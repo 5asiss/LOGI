@@ -1,12 +1,27 @@
-from flask import Flask, render_template_string, request, jsonify, send_file
+from flask import Flask, render_template_string, request, jsonify, send_file, session, redirect, url_for
 import pandas as pd
 import io
 import json
 import sqlite3
 import os
 from datetime import datetime, timedelta
+from functools import wraps
 
 app = Flask(__name__)
+
+# [수정/추가] 세션 및 관리자 정보 설정
+app.secret_key = 'uncle_baguni_secret_key_1985' # 세션 암호화 키
+ADMIN_ID = "admin"
+ADMIN_PW = "1234"
+
+# [수정/추가] 로그인 체크 데코레이터
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # 이미지 업로드 폴더 설정
 UPLOAD_FOLDER = 'static/evidences'
@@ -84,10 +99,11 @@ BASE_HTML = """
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <title>바구니삼촌 통합 정산 시스템</title>
+    <title>sm logitek</title>
     <style>
         body { font-family: 'Malgun Gothic', sans-serif; margin: 10px; font-size: 11px; background: #f0f2f5; }
-        .nav { background: #1a2a6c; padding: 10px; border-radius: 5px; margin-bottom: 15px; display: flex; gap: 15px; }
+        .nav { background: #1a2a6c; padding: 10px; border-radius: 5px; margin-bottom: 15px; display: flex; gap: 15px; justify-content: space-between; align-items: center; }
+        .nav-links { display: flex; gap: 15px; }
         .nav a { color: white; text-decoration: none; font-weight: bold; }
         .section { background: white; padding: 15px; border-radius: 5px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .scroll-x { overflow-x: auto; max-width: 100%; border: 1px solid #ccc; background: white; }
@@ -118,15 +134,23 @@ BASE_HTML = """
         .link-btn { font-size: 9px; padding: 2px 4px; border: 1px solid #ccc; background: #f8f9fa; color: #333; text-decoration: none; border-radius: 2px; }
         .link-btn:hover { background: #e9ecef; }
         .link-btn.has-file { background: #e3f2fd; border-color: #2196f3; color: #1976d2; font-weight: bold; }
+        .pagination { display: flex; justify-content: center; gap: 5px; margin-top: 15px; }
+        .page-btn { padding: 5px 10px; border: 1px solid #ddd; background: white; cursor: pointer; text-decoration: none; color: #333; border-radius: 3px; }
+        .page-btn.active { background: #1a2a6c; color: white; border-color: #1a2a6c; }
     </style>
 </head>
 <body>
     <div class="nav">
-        <a href="/">통합장부입력</a>
-        <a href="/settlement">정산관리</a>
-        <a href="/statistics">통계분석</a>
-        <a href="/manage_drivers">기사관리</a>
-        <a href="/manage_clients">업체관리</a>
+        <div class="nav-links">
+            <a href="/">통합장부입력</a>
+            <a href="/settlement">정산관리</a>
+            <a href="/statistics">통계분석</a>
+            <a href="/manage_drivers">기사관리</a>
+            <a href="/manage_clients">업체관리</a>
+        </div>
+        <div>
+            <a href="/logout" style="background:#e74c3c; padding:5px 10px; border-radius:3px; color:white;">로그아웃</a>
+        </div>
     </div>
     <div class="container">{{ content_body | safe }}</div>
     <div id="search-popup" class="search-results"></div>
@@ -248,9 +272,12 @@ BASE_HTML = """
         function loadLedgerList() {
             const body = document.getElementById('ledgerBody');
             if (!body) return; 
-            fetch('/api/get_ledger').then(r => r.json()).then(data => {
-                lastLedgerData = data;
-                renderTableRows(data);
+            const urlParams = new URLSearchParams(window.location.search);
+            const page = urlParams.get('page') || 1;
+            fetch(`/api/get_ledger?page=${page}`).then(r => r.json()).then(res => {
+                lastLedgerData = res.data;
+                renderTableRows(res.data);
+                renderPagination(res.total_pages, res.current_page, 'ledger');
             });
         }
 
@@ -278,6 +305,20 @@ BASE_HTML = """
                 </tr>
             `).join('');
             initDraggable();
+        }
+
+        function renderPagination(totalPages, currentPage, type) {
+            const container = document.getElementById(type + 'Pagination');
+            if (!container) return;
+            let html = "";
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            for (let i = 1; i <= totalPages; i++) {
+                urlParams.set('page', i);
+                const activeClass = i == currentPage ? "active" : "";
+                html += `<a href="?${urlParams.toString()}" class="page-btn ${activeClass}">${i}</a>`;
+            }
+            container.innerHTML = html;
         }
 
         function initDraggable() {
@@ -350,7 +391,54 @@ BASE_HTML = """
 </html>
 """
 
+# [수정/추가] 로그인 페이지 HTML
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>관리자 로그인 - 바구니삼촌</title>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .login-box { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 320px; }
+        h2 { text-align: center; color: #1a2a6c; margin-bottom: 20px; }
+        input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
+        button { width: 100%; padding: 12px; background: #1a2a6c; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; }
+        .error { color: #e74c3c; font-size: 12px; text-align: center; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2>sm logitek</h2>
+        <form method="post">
+            <input type="text" name="username" placeholder="아이디" required autofocus>
+            <input type="password" name="password" placeholder="비밀번호" required>
+            <button type="submit">로그인</button>
+        </form>
+        {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        if request.form['username'] == ADMIN_ID and request.form['password'] == ADMIN_PW:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            error = "아이디 또는 비밀번호가 올바르지 않습니다."
+    return render_template_string(LOGIN_HTML, error=error)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required 
 def index():
     col_keys_json = json.dumps([c['k'] for c in FULL_COLUMNS])
     content = f"""
@@ -375,17 +463,23 @@ def index():
         <div style="text-align:right; margin-top:15px;"><button type="button" class="btn-save" onclick="saveLedger('ledgerForm')">상세 저장 및 추가 ↓</button></div></form>
     </div>
     <div class="section"><h3>2. 장부 목록 (원천 데이터)</h3><input type="text" id="ledgerSearch" class="search-bar" placeholder="실시간 검색..." onkeyup="filterLedger()">
-    <div class="scroll-x"><table><thead><tr><th>관리</th>{"".join([f"<th>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div></div>
+    <div class="scroll-x"><table><thead><tr><th>관리</th>{"".join([f"<th>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
+    <div id="ledgerPagination" class="pagination"></div></div>
     """
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys=col_keys_json)
 
 @app.route('/settlement')
+@login_required 
 def settlement():
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     q_status = request.args.get('status', ''); q_name = request.args.get('name', '')
-    rows = conn.execute("SELECT * FROM ledger ORDER BY dispatch_dt DESC").fetchall(); conn.close()
-    table_rows = ""; today = datetime.now()
+    page = int(request.args.get('page', 1))
+    per_page = 50
     
+    rows = conn.execute("SELECT * FROM ledger ORDER BY dispatch_dt DESC").fetchall(); conn.close()
+    
+    filtered_rows = []
+    today = datetime.now()
     for row in rows:
         in_dt = row['in_dt']; out_dt = row['out_dt']; pay_due_dt = row['pay_due_dt']
         pre_post = row['pre_post']; dispatch_dt_str = row['dispatch_dt']
@@ -424,9 +518,32 @@ def settlement():
             else:
                 pay_status = "조건부미지급"; pay_color = "bg-blue"
 
-        misu_btn = f'<button class="btn-status {misu_color}" onclick="changeStatus({row["id"]}, \'in_dt\', \'{today.strftime("%Y-%m-%d")}\')">{misu_status}</button>'
+        if q_name and q_name not in str(row['client_name']) and q_name not in str(row['d_name']): continue
+        if q_status:
+            if q_status == 'misu_all' and in_dt: continue
+            if q_status == 'pay_all' and out_dt: continue
+            if q_status == 'misu_only' and misu_status != '미수': continue
+            if q_status == 'cond_misu' and misu_status != '조건부미수금': continue
+            if q_status == 'pay_only' and pay_status != '미지급': continue
+            if q_status == 'cond_pay' and pay_status != '조건부미지급': continue
+            if q_status == 'done_in' and not in_dt: continue
+            if q_status == 'done_out' and not out_dt: continue
+
+        row_data = dict(row)
+        row_data['m_st'] = misu_status; row_data['m_cl'] = misu_color
+        row_data['p_st'] = pay_status; row_data['p_cl'] = pay_color
+        filtered_rows.append(row_data)
+
+    total_pages = (len(filtered_rows) + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_data = filtered_rows[start:end]
+
+    table_rows = ""
+    for row in page_data:
+        misu_btn = f'<button class="btn-status {row["m_cl"]}" onclick="changeStatus({row["id"]}, \'in_dt\', \'{today.strftime("%Y-%m-%d")}\')">{row["m_st"]}</button>'
         tax_issued_btn = f'<button class="btn-status {"bg-green" if row["tax_chk"]=="발행완료" else "bg-orange"}" onclick="changeStatus({row["id"]}, \'tax_chk\', \'발행완료\')">{row["tax_chk"] if row["tax_chk"] else "미발행"}</button>'
-        pay_btn = f'<button class="btn-status {pay_color}" onclick="changeStatus({row["id"]}, \'out_dt\', \'{today.strftime("%Y-%m-%d")}\')">{pay_status}</button>'
+        pay_btn = f'<button class="btn-status {row["p_cl"]}" onclick="changeStatus({row["id"]}, \'out_dt\', \'{today.strftime("%Y-%m-%d")}\')">{row["p_st"]}</button>'
         
         def make_direct_links(ledger_id, img_type, raw_paths):
             paths = [p.strip() for p in (raw_paths or "").split(',')] if raw_paths else []
@@ -440,6 +557,8 @@ def settlement():
 
         table_rows += f"<tr><td>{row['client_name']}</td><td>{tax_issued_btn}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{row['fee']}</td><td>{misu_btn}</td><td>{row['fee_out']}</td><td>{pay_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td></tr>"
     
+    pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
+
     content = f"""<div class="section"><h2>정산 관리 (필터검색)</h2>
     <form class="filter-box" method="get">
         필터: <select name="status">
@@ -453,22 +572,26 @@ def settlement():
             <option value="done_in" {'selected' if q_status=='done_in' else ''}>수금완료</option>
             <option value="done_out" {'selected' if q_status=='done_out' else ''}>지급완료</option>
         </select>
-        <input type="text" name="name" value="{q_name}" placeholder="거래처/기사명">
+        <input type="text" name="name" value="{q_name}" placeholder="거래처 또는 기사명 입력">
         <button type="submit">조회</button>
     </form>
     <div style="margin-bottom:15px;">
         <a href="/export_misu_info?status={q_status}&name={q_name}" class="btn-status bg-red">미수금 거래처정보 엑셀</a>
         <a href="/export_pay_info?status={q_status}&name={q_name}" class="btn-status bg-orange">미지급 기사정보 엑셀</a>
     </div>
-    <div class="scroll-x"><table><thead><tr><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>업체운임</th><th>수금상태</th><th>기사운임</th><th>지급상태</th><th>기사계산서(1~5)</th><th>운송장(1~5)</th></tr></thead><tbody>{table_rows}</tbody></table></div></div>"""
+    <div class="scroll-x"><table><thead><tr><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>업체운임</th><th>수금상태</th><th>기사운임</th><th>지급상태</th><th>기사계산서(1~5)</th><th>운송장(1~5)</th></tr></thead><tbody>{table_rows}</tbody></table></div>
+    <div class="pagination">{pagination_html}</div></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
 @app.route('/statistics')
+@login_required 
 def statistics():
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     q_start = request.args.get('start', ''); q_end = request.args.get('end', '')
     q_client = request.args.get('client', '').strip(); q_driver = request.args.get('driver', '').strip()
     q_status = request.args.get('status', '')
+    page = int(request.args.get('page', 1))
+    per_page = 50
     
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     filtered_rows = []
@@ -521,20 +644,17 @@ def statistics():
         df_f['fee'] = pd.to_numeric(df_f['fee'], errors='coerce').fillna(0)
         df_f['fee_out'] = pd.to_numeric(df_f['fee_out'], errors='coerce').fillna(0)
         
-        # 상위 5개 요약
         client_stats_top = df_f.groupby('client_name')['fee'].sum().sort_values(ascending=False).head(5)
         profit_by_client_top = "".join([f"<tr><td>{n}</td><td>{int(v):,}원</td></tr>" for n, v in client_stats_top.items()])
         driver_stats_top = df_f.groupby('d_name')['fee_out'].sum().sort_values(ascending=False).head(5)
         profit_by_driver_top = "".join([f"<tr><td>{n}</td><td>{int(v):,}원</td></tr>" for n, v in driver_stats_top.items()])
         
-        # [수정 지점] 업체별 정산서 리스트 (부가세 10% 내역 포함)
         client_full = df_f.groupby('client_name').agg({'fee': 'sum', 'id': 'count'}).sort_values(by='fee', ascending=False)
         for n, v in client_full.iterrows():
             total_fee = int(v['fee'])
             vat = int(total_fee * 0.1)
             full_settlement_client += f"<tr><td>{n}</td><td>{int(v['id'])}건</td><td style='text-align:right;'>{total_fee:,}원</td><td style='text-align:right;'>{vat:,}원</td><td style='text-align:right; font-weight:bold;'>{total_fee+vat:,}원</td></tr>"
         
-        # [수정 지점] 기사별 정산서 리스트 (부가세 10% 내역 포함)
         driver_full = df_f.groupby('d_name').agg({'fee_out': 'sum', 'id': 'count'}).sort_values(by='fee_out', ascending=False)
         for n, v in driver_full.iterrows():
             total_fo = int(v['fee_out'])
@@ -545,12 +665,15 @@ def statistics():
         st['fee'] += int(r['fee'] or 0); st['fo'] += int(r['fee_out'] or 0)
     
     st['prof'] = st['fee'] - st['fo']
-    # [수정 지점] 나의 수익 통계 부가세 계산 (매출부가세, 매입부가세, 최종수익부가세)
-    fee_vat = int(st['fee'] * 0.1)
-    fo_vat = int(st['fo'] * 0.1)
-    prof_vat = fee_vat - fo_vat
+    fee_vat = int(st['fee'] * 0.1); fo_vat = int(st['fo'] * 0.1); prof_vat = fee_vat - fo_vat
 
-    list_html = "".join([f"<tr><td>{r['client_name']}</td><td>{r['order_dt']}</td><td>{r['route']}</td><td>{r['d_name']}</td><td>{int(r['fee'] or 0):,}</td><td>{int(r['fee_out'] or 0):,}</td><td>{(int(r['fee'] or 0) - int(r['fee_out'] or 0)):,}</td><td>{r['in_dt'] or '미수'}</td><td>{r['out_dt'] or '미지급'}</td></tr>" for r in filtered_rows])
+    total_pages = (len(filtered_rows) + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_data = filtered_rows[start:end]
+
+    list_html = "".join([f"<tr><td>{r['client_name']}</td><td>{r['order_dt']}</td><td>{r['route']}</td><td>{r['d_name']}</td><td>{int(r['fee'] or 0):,}</td><td>{int(r['fee_out'] or 0):,}</td><td>{(int(r['fee'] or 0) - int(r['fee_out'] or 0)):,}</td><td>{r['in_dt'] or '미수'}</td><td>{r['out_dt'] or '미지급'}</td></tr>" for r in page_data])
+    pagination_html = "".join([f'<a href="/statistics?start={q_start}&end={q_end}&client={q_client}&driver={q_driver}&status={q_status}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
 
     content = f"""
     <div class="section">
@@ -582,6 +705,7 @@ def statistics():
             <a href="/export_stats?start={q_start}&end={q_end}&client={q_client}&driver={q_driver}&status={q_status}" class="btn-status bg-green">현재 검색 결과 엑셀 다운로드</a>
         </div>
         <div class="scroll-x"><table><thead><tr><th>업체명</th><th>오더일</th><th>노선</th><th>기사명</th><th>업체운임</th><th>기사운임</th><th>순수익</th><th>수금일</th><th>지급일</th></tr></thead><tbody>{list_html}</tbody></table></div>
+        <div class="pagination">{pagination_html}</div>
         
         <hr style="margin:40px 0;">
         <div style="display:flex; gap:20px;">
@@ -615,23 +739,19 @@ def statistics():
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
 @app.route('/export_custom_settlement')
+@login_required 
 def export_custom_settlement():
     t = request.args.get('type', 'client'); s = request.args.get('start',''); e = request.args.get('end','')
     c = request.args.get('client',''); d = request.args.get('driver',''); st = request.args.get('status', '')
-    
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
-    
     filtered_data = []
-    today = datetime.now()
     for row in rows:
         r = dict(row)
         in_dt = r['in_dt']; out_dt = r['out_dt']; p_due = r['pay_due_dt']; pre = r['pre_post']
         o_dt = r['order_dt'] or ""; t_img = r['tax_img'] or ""; s_img = r['ship_img'] or ""
-        
         m_st = "조건부미수금" if not pre and not in_dt and not p_due else ("수금완료" if in_dt else "미수")
         p_st = "지급완료" if out_dt else ("미지급" if in_dt and any('static' in p for p in t_img.split(',')) and any('static' in p for p in s_img.split(',')) else "조건부미지급")
-        
         if s and e and not (s <= o_dt <= e): continue
         if c and c not in str(r['client_name']): continue
         if d and d not in str(r['d_name']): continue
@@ -644,37 +764,26 @@ def export_custom_settlement():
         if st == 'done_in' and not in_dt: continue
         if st == 'done_out' and not out_dt: continue
         filtered_data.append(r)
-
     df = pd.DataFrame(filtered_data)
     if df.empty: return "데이터가 없습니다."
-
     group_col = 'client_name' if t == 'client' else 'd_name'
     amt_col = 'fee' if t == 'client' else 'fee_out'
-    
     df[amt_col] = pd.to_numeric(df[amt_col], errors='coerce').fillna(0)
-    
-    # 엑셀 시트 생성용 리스트 가공
     excel_list = []
     for name, group in df.groupby(group_col):
         for idx, row in group.iterrows():
-            amt = int(row[amt_col])
-            vat = int(amt * 0.1)
-            excel_list.append({
-                '구분': name, '오더일': row['order_dt'], '노선': row['route'],
-                '공급가액': amt, '부가세(10%)': vat, '합계': amt + vat
-            })
-        # 그룹별 합계행 추가
-        g_amt = group[amt_col].sum()
-        g_vat = int(g_amt * 0.1)
+            amt = int(row[amt_col]); vat = int(amt * 0.1)
+            excel_list.append({'구분': name, '오더일': row['order_dt'], '노선': row['route'], '공급가액': amt, '부가세(10%)': vat, '합계': amt + vat})
+        g_amt = group[amt_col].sum(); g_vat = int(g_amt * 0.1)
         excel_list.append({'구분': f'[{name}] 합계', '오더일': '-', '노선': '-', '공급가액': int(g_amt), '부가세(10%)': g_vat, '합계': int(g_amt + g_vat)})
-        excel_list.append({}) # 빈줄 추가
-
+        excel_list.append({})
     result_df = pd.DataFrame(excel_list)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w: result_df.to_excel(w, index=False)
     out.seek(0); return send_file(out, as_attachment=True, download_name=f"{t}_settlement.xlsx")
 
 @app.route('/export_misu_info')
+@login_required 
 def export_misu_info():
     q_st = request.args.get('status', ''); q_name = request.args.get('name', '')
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
@@ -690,17 +799,14 @@ def export_misu_info():
         elif not q_st and not in_dt: pass
         else: continue
         if q_name and q_name not in str(row_dict['client_name']): continue
-        export_data.append({
-            '거래처명': row_dict['client_name'], '사업자번호': row_dict['biz_num'], '대표자': row_dict['biz_owner'],
-            '메일': row_dict['mail'], '연락처': row_dict['c_phone'], '노선': row_dict['route'], 
-            '업체운임': row_dict['fee'], '오더일': row_dict['order_dt'], '결제예정일': row_dict['pay_due_dt']
-        })
+        export_data.append({'거래처명': row_dict['client_name'], '사업자번호': row_dict['biz_num'], '대표자': row_dict['biz_owner'], '메일': row_dict['mail'], '연락처': row_dict['c_phone'], '노선': row_dict['route'], '업체운임': row_dict['fee'], '오더일': row_dict['order_dt'], '결제예정일': row_dict['pay_due_dt']})
     df = pd.DataFrame(export_data)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w: df.to_excel(w, index=False)
     out.seek(0); return send_file(out, as_attachment=True, download_name="misu_client_info.xlsx")
 
 @app.route('/export_pay_info')
+@login_required 
 def export_pay_info():
     q_st = request.args.get('status', ''); q_name = request.args.get('name', '')
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
@@ -719,36 +825,26 @@ def export_pay_info():
         elif not q_st and not out_dt: pass
         else: continue
         if q_name and q_name not in str(row_dict['d_name']): continue
-        export_data.append({
-            '기사명': row_dict['d_name'], '차량번호': row_dict['c_num'], '연락처': row_dict['d_phone'],
-            '은행계좌': row_dict['bank_acc'], '예금주': row_dict['tax_biz_name'], '노선': row_dict['route'],
-            '기사운임': row_dict['fee_out'], '오더일': row_dict['order_dt'], '배차일': row_dict['dispatch_dt']
-        })
+        export_data.append({'기사명': row_dict['d_name'], '차량번호': row_dict['c_num'], '연락처': row_dict['d_phone'], '은행계좌': row_dict['bank_acc'], '예금주': row_dict['tax_biz_name'], '노선': row_dict['route'], '기사운임': row_dict['fee_out'], '오더일': row_dict['order_dt'], '배차일': row_dict['dispatch_dt']})
     df = pd.DataFrame(export_data)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w: df.to_excel(w, index=False)
     out.seek(0); return send_file(out, as_attachment=True, download_name="pay_driver_info.xlsx")
 
 @app.route('/export_stats')
+@login_required 
 def export_stats():
-    s = request.args.get('start',''); e = request.args.get('end','')
-    c = request.args.get('client',''); d = request.args.get('driver',''); st = request.args.get('status', '')
+    s = request.args.get('start',''); e = request.args.get('end',''); c = request.args.get('client',''); d = request.args.get('driver',''); st = request.args.get('status', '')
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
-    data = []
-    for row in rows:
-        r = dict(row)
-        o_dt = r['order_dt'] or ""
-        if s and e and not (s <= o_dt <= e): continue
-        if c and c not in str(r['client_name']): continue
-        if d and d not in str(r['d_name']): continue
-        data.append(r)
+    data = [dict(r) for r in rows if not (s and e and not (s <= (r['order_dt'] or "") <= e))]
     df = pd.DataFrame(data)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w: df.to_excel(w, index=False)
     out.seek(0); return send_file(out, as_attachment=True, download_name="filtered_stats.xlsx")
 
 @app.route('/upload_evidence/<int:ledger_id>', methods=['GET', 'POST'])
+@login_required 
 def upload_evidence(ledger_id):
     target_type = request.args.get('type', 'all'); target_seq = request.args.get('seq', '1')
     if request.method == 'POST':
@@ -767,14 +863,41 @@ def upload_evidence(ledger_id):
             path = os.path.join(UPLOAD_FOLDER, f"ship_{ledger_id}_{target_seq}_{ship_file.filename}")
             ship_file.save(path); conn.execute("UPDATE ledger SET ship_img = ? WHERE id = ?", (update_p(row['ship_img'] or "", path, target_seq), ledger_id))
         conn.commit(); conn.close(); return "<h3>업로드 완료</h3><script>setTimeout(()=>location.reload(), 1000);</script>"
-    seq_btns_html = ""
+
+    # build sequence buttons and HTML safely to avoid nested f-string/brace parsing issues
+    seq_btns = []
     for i in range(1, 6):
-        is_active = "active" if str(i) == target_seq else ""
-        btn_url = f"/upload_evidence/{ledger_id}?type={target_type}&seq={i}"
-        seq_btns_html += f'<button class="seq-btn {is_active}" onclick="location.href=\'{btn_url}\'">{i}번</button>'
-    return f"""<meta name="viewport" content="width=device-width,initial-scale=1.0"><style>body{{padding:20px; text-align:center; font-family:sans-serif;}} .seq-btns{{display:flex; gap:10px; justify-content:center; margin-bottom:20px;}} .seq-btn{{padding:10px 15px; border:1px solid #ccc; background:white; cursor:pointer;}} .seq-btn.active{{background:#007bff; color:white; border-color:#007bff; font-weight:bold;}} button[type="button"]{{width:100%; padding:15px; background:#28a745; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; margin-top:10px;}}</style><h3>증빙 업로드 - { "기사계산서" if target_type=="tax" else "운송장" }</h3><div class="seq-btns">{seq_btns_html}</div><p>현재 선택된 슬롯: <b>{target_seq}번</b></p><form id="uploadForm">파일 선택: <input type='file' id='file_input' accept='image/*' style='margin-bottom:10px;'><button type="button" onclick="processAndUpload()">전송하기</button></form><div id="status"></div><script>async function processAndUpload(){{const s=document.getElementById('status'); const fileInput = document.getElementById('file_input'); if(!fileInput.files[0]) {{ alert("파일을 선택해주세요."); return; }} s.innerText="압축 및 전송중..."; const compress=(f)=>new Promise((r)=>{{const reader=new FileReader(); reader.readAsDataURL(f); reader.onload=(e)=>{{const img=new Image(); img.src=e.target.result; img.onload=()=>{{const cvs=document.createElement('canvas'); let w=img.width,h=img.height; if(w>1200){{h*=1200/w;w=1200}} cvs.width=w;cvs.height=h; cvs.getContext('2d').drawImage(img,0,0,w,h); cvs.toBlob((b)=>r(b),'image/jpeg',0.7)}}}}}}); const fd=new FormData(); const type = "{target_type}"; const fileBlob = await compress(fileInput.files[0]); fd.append(type === 'tax' ? 'tax_file' : 'ship_file', fileBlob, 'upload.jpg'); fetch(location.href,{{method:'POST',body:fd}}).then(r=>r.text()).then(t=>{{document.body.innerHTML=t; if(window.opener) window.opener.location.reload(); }});}}</script>"""
+        active_cls = 'active' if str(i) == target_seq else ''
+        href = f"/upload_evidence/{ledger_id}?type={target_type}&seq={i}"
+        seq_btns.append(f"<button class=\"seq-btn {active_cls}\" onclick=\"location.href='{href}'\">{i}번</button>")
+    seq_btns_html = "".join(seq_btns)
+
+    title_text = "기사계산서" if target_type == "tax" else "운송장"
+    script = (
+        "<script>async function processAndUpload(){"
+        "const s=document.getElementById('status'); const fileInput = document.getElementById('file_input');"
+        "if(!fileInput.files[0]) { alert('파일을 선택해주세요.'); return; }"
+        "s.innerText='압축 및 전송중...';"
+        "const compress=(f)=>new Promise((r)=>{const reader=new FileReader(); reader.readAsDataURL(f); reader.onload=(e)=>{const img=new Image(); img.src=e.target.result; img.onload=()=>{const cvs=document.createElement('canvas'); let w=img.width,h=img.height; if(w>1200){h*=1200/w;w=1200} cvs.width=w;cvs.height=h; cvs.getContext('2d').drawImage(img,0,0,w,h); cvs.toBlob((b)=>r(b),'image/jpeg',0.7)}}});"
+        "const fd=new FormData(); const type='" + target_type + "';"
+        "(async ()=>{ const fileBlob = await compress(fileInput.files[0]); fd.append(type === 'tax' ? 'tax_file' : 'ship_file', fileBlob, 'upload.jpg');"
+        "fetch(location.href,{method:'POST',body:fd}).then(r=>r.text()).then(t=>{document.body.innerHTML=t; if(window.opener) window.opener.location.reload(); });})();"
+        "}</script>"
+    )
+
+    html = (
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+        '<style>body{padding:20px; text-align:center; font-family:sans-serif;} .seq-btns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;} .seq-btn{padding:10px 15px; border:1px solid #ccc; background:white; cursor:pointer;} .seq-btn.active{background:#007bff; color:white; border-color:#007bff; font-weight:bold;} button[type="button"]{width:100%; padding:15px; background:#28a745; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; margin-top:10px;}</style>'
+        f'<h3>증빙 업로드 - {title_text}</h3>'
+        f'<div class="seq-btns">{seq_btns_html}</div>'
+        f'<p>현재 선택된 슬롯: <b>{target_seq}번</b></p>'
+        "<form id=\"uploadForm\">파일 선택: <input type='file' id='file_input' accept='image/*' style='margin-bottom:10px;'><button type=\"button\" onclick=\"processAndUpload()\">전송하기</button></form><div id=\"status\"></div>"
+        + script
+    )
+    return html
 
 @app.route('/api/save_ledger', methods=['POST'])
+@login_required 
 def save_ledger_api():
     data = request.json; conn = sqlite3.connect('ledger.db'); cursor = conn.cursor()
     keys = [c['k'] for c in FULL_COLUMNS]
@@ -785,7 +908,7 @@ def save_ledger_api():
     if data.get('client_name'):
         cursor.execute("SELECT rowid FROM clients WHERE 업체명 = ?", (data.get('client_name'),))
         res = cursor.fetchone()
-        c_d = (data.get('biz_num',''),data.get('biz_owner',''),data.get('biz_addr',''),data.get('mail',''),data.get('c_mgr_name',''),data.get('c_phone',''),data.get('pay_memo',''),data.get('biz_type1',''),data.get('biz_type2',''),data.get('client_name'))
+        c_d = (data.get('biz_num',''),data.get('biz_owner',''),data.get('biz_addr',''),data.get('mail',''),data.get('c_mgr_name',''),data.get('c_phone',''),data.get('pay_memo',''),data.get('biz_type1',''),data.get('biz_type2',''),data['client_name'])
         if res: cursor.execute("UPDATE clients SET 사업자등록번호=?,대표자명=?,사업자주소=?,메일주소=?,담당자=?,연락처=?,결제특이사항=?,종목=?,업태=? WHERE 업체명=?", c_d)
         else: cursor.execute("INSERT INTO clients (사업자등록번호,대표자명,사업자주소,메일주소,담당자,연락처,결제특이사항,종목,업태,업체명) VALUES (?,?,?,?,?,?,?,?,?,?)", c_d)
     if data.get('d_name') and data.get('c_num'):
@@ -797,39 +920,66 @@ def save_ledger_api():
     conn.commit(); conn.close(); load_db_to_mem(); return jsonify({"status": "success"})
 
 @app.route('/api/load_db_mem')
+@login_required 
 def api_load_db_mem(): load_db_to_mem(); return jsonify({"drivers": drivers_db, "clients": clients_db})
 
 @app.route('/api/get_ledger')
+@login_required 
 def get_ledger():
-    conn = sqlite3.connect('ledger.db'); df = pd.read_sql("SELECT * FROM ledger ORDER BY id DESC", conn); conn.close()
-    return jsonify(df.to_dict('records'))
+    page = int(request.args.get('page', 1))
+    per_page = 50
+    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    all_rows = conn.execute("SELECT * FROM ledger ORDER BY id DESC").fetchall()
+    total_count = len(all_rows)
+    total_pages = (total_count + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_rows = [dict(r) for r in all_rows[start:end]]
+    conn.close()
+    return jsonify({"data": page_rows, "total_pages": total_pages, "current_page": page})
 
 @app.route('/api/update_status', methods=['POST'])
+@login_required 
 def update_status():
     data = request.json; conn = sqlite3.connect('ledger.db'); conn.execute(f"UPDATE ledger SET {data['key']} = ? WHERE id = ?", (data['value'], data['id'])); conn.commit(); conn.close(); return jsonify({"status": "success"})
 
 @app.route('/manage_drivers', methods=['GET', 'POST'])
+@login_required 
 def manage_drivers():
     global drivers_db
     if request.method == 'POST' and 'file' in request.files:
         file = request.files['file']
         if file.filename != '':
-            df = pd.read_excel(file, engine='openpyxl') if file.filename.endswith(('.xlsx', '.xls')) else pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
-            df = df.fillna('').astype(str); conn = sqlite3.connect('ledger.db'); df.to_sql('drivers', conn, if_exists='replace', index=False); conn.commit(); conn.close(); load_db_to_mem()
+            if file.filename.lower().endswith(('.xlsx', '.xls')):
+                df = pd.read_excel(file, engine='openpyxl')
+            else:
+                df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
+            df = df.fillna('').astype(str)
+            conn = sqlite3.connect('ledger.db')
+            df.to_sql('drivers', conn, if_exists='replace', index=False)
+            conn.commit(); conn.close(); load_db_to_mem()
     rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in DRIVER_COLS])}</tr>" for r in drivers_db])
     content = f"""<div class="section"><h2>기사 관리</h2><form method="post" enctype="multipart/form-data"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form><div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in DRIVER_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
 @app.route('/manage_clients', methods=['GET', 'POST'])
+@login_required 
 def manage_clients():
     global clients_db
     if request.method == 'POST' and 'file' in request.files:
         file = request.files['file']
         if file.filename != '':
             try:
-                df = pd.read_excel(file, engine='openpyxl') if file.filename.endswith(('.xlsx', '.xls')) else pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
-                df = df.fillna('').astype(str); conn = sqlite3.connect('ledger.db'); df.to_sql('clients', conn, if_exists='replace', index=False); conn.commit(); conn.close(); load_db_to_mem()
-            except Exception as e: return f"업로드 오류: {str(e)}"
+                if file.filename.lower().endswith(('.xlsx', '.xls')):
+                    df = pd.read_excel(file, engine='openpyxl')
+                else:
+                    df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
+                df = df.fillna('').astype(str)
+                conn = sqlite3.connect('ledger.db')
+                df.to_sql('clients', conn, if_exists='replace', index=False)
+                conn.commit(); conn.close(); load_db_to_mem()
+            except Exception as e:
+                return f"업로드 오류: {str(e)}"
     rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])}</tr>" for r in clients_db])
     content = f"""<div class="section"><h2>업체 관리</h2><form method="post" enctype="multipart/form-data"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form><div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
