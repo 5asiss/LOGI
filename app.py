@@ -4,7 +4,7 @@ import pandas as pd
 
 # .env 파일 로드 (python-dotenv)
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # type: ignore[reportMissingImports]
     load_dotenv()
 except ImportError:
     pass
@@ -1385,8 +1385,8 @@ def export_stats():
     return send_file(out, as_attachment=True, download_name=f"SM_Logis_Stats_{now_kst().strftime('%y%m%d')}.xlsx")
 
 @app.route('/upload_evidence/<int:ledger_id>', methods=['GET', 'POST'])
-@login_required 
 def upload_evidence(ledger_id):
+    """기사가 링크로 접속해 계산서/운송장 사진 업로드 (로그인 불필요)"""
     target_type = request.args.get('type', 'all')
     try:
         seq_val = int(request.args.get('seq', 1) or 1)
