@@ -3,3 +3,4 @@ pandas
 openpyxl
 python-dotenv
 gunicorn>=21.0.0
+APScheduler>=3.10.0

@@ -175,7 +175,25 @@ def init_db():
         details TEXT          -- 변경 내용 요약
     )
     """)
-
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS arrival_status (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_time TEXT,
+        content TEXT,
+        content_important TEXT,
+        content_color TEXT,
+        content_font TEXT,
+        content_font_size TEXT,
+        order_idx INTEGER DEFAULT 0
+    )
+    """)
+    for col in ['content_important', 'content_color', 'content_font', 'content_font_size']:
+        try:
+            cursor.execute("PRAGMA table_info(arrival_status)")
+            existing = [r[1] for r in cursor.fetchall()]
+            if col not in existing:
+                cursor.execute(f"ALTER TABLE arrival_status ADD COLUMN {col} TEXT")
+        except: pass
 
     conn.commit()
     conn.close()
@@ -1684,35 +1702,73 @@ def arrival():
     content = f"""
     <div class="section">
         <h2>🚚 도착현황</h2>
-        <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:20px; padding:15px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
-            <div>
-                <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">도착 예정 시간</label>
-                <input type="datetime-local" id="arrivalTargetTime" style="width:200px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+        <div style="margin-bottom:20px; padding:18px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">내용</label>
+                    <input type="text" id="arrivalContent" placeholder="예: 서울→부산 12톤 김기사" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; color:#1a2a6c; font-weight:bold; margin-bottom:4px;">중요내용</label>
+                    <input type="text" id="arrivalContentImportant" placeholder="강조할 중요 문구" style="width:100%; padding:8px 12px; border:1px solid #1a2a6c; border-radius:6px;">
+                </div>
             </div>
-            <div style="flex:1; min-width:200px;">
-                <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">내용 (자유 입력)</label>
-                <input type="text" id="arrivalContent" placeholder="예: 서울→부산 12톤 김기사" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+            <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+                <div>
+                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">도착 예정 시간</label>
+                    <input type="datetime-local" id="arrivalTargetTime" style="width:200px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">색상</label>
+                    <input type="color" id="arrivalContentColor" value="#1a2a6c" style="width:44px; height:36px; padding:2px; border:1px solid #cbd5e1; border-radius:6px; cursor:pointer;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">폰트</label>
+                    <select id="arrivalContentFont" style="padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+                        <option value="Malgun Gothic">맑은 고딕</option>
+                        <option value="Apple SD Gothic Neo">Apple SD 고딕</option>
+                        <option value="Arial">Arial</option>
+                        <option value="Georgia">Georgia</option>
+                        <option value="Nanum Gothic">나눔고딕</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">폰트크기</label>
+                    <select id="arrivalContentFontSize" style="padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+                        <option value="12px">12px</option>
+                        <option value="14px">14px</option>
+                        <option value="16px" selected>16px</option>
+                        <option value="18px">18px</option>
+                        <option value="20px">20px</option>
+                        <option value="24px">24px</option>
+                    </select>
+                </div>
+                <button onclick="addArrivalItem()" class="btn-save" style="padding:8px 18px;">추가</button>
             </div>
-            <button onclick="addArrivalItem()" class="btn-save" style="padding:8px 18px;">추가</button>
         </div>
         <div class="arrival-list" id="arrivalList"></div>
     </div>
     <style>
-        .arrival-item {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:14px 16px; margin-bottom:10px; display:flex; align-items:flex-start; gap:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05); }}
+        .arrival-item {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:14px 16px; margin-bottom:10px; display:flex; align-items:flex-start; gap:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05); cursor:pointer; }}
         .arrival-item.expired {{ background:#fef2f2; border-color:#fecaca; }}
+        .arrival-item.editing {{ border-color:#1a2a6c; box-shadow:0 0 0 2px rgba(26,42,108,0.2); }}
         .arrival-item .countdown {{ font-size:20px; font-weight:700; color:#1a2a6c; min-width:140px; flex-shrink:0; }}
         .arrival-item .countdown.warn {{ color:#dc2626; }}
         .arrival-item .countdown.done {{ color:#64748b; font-size:14px; }}
+        .arrival-item .countdown.paused {{ color:#94a3b8; font-style:italic; }}
         .arrival-item .content-area {{ flex:1; word-break:break-all; line-height:1.5; }}
-        .arrival-item .content-display {{ cursor:pointer; padding:4px 8px; margin:-4px -8px; border-radius:4px; }}
+        .arrival-item .content-display {{ padding:4px 8px; margin:-4px -8px; border-radius:4px; }}
         .arrival-item .content-display:hover {{ background:#f1f5f9; }}
-        .arrival-item .content-edit {{ width:100%; border:1px solid #e2e8f0; padding:6px 10px; border-radius:4px; font-size:13px; min-height:60px; resize:vertical; }}
+        .arrival-item .content-edit {{ width:100%; border:1px solid #1a2a6c; padding:6px 10px; border-radius:4px; font-size:13px; min-height:36px; }}
+        .arrival-item .edit-panel {{ display:none; margin-top:10px; padding:10px; background:#f8fafc; border-radius:6px; border:1px solid #e2e8f0; }}
+        .arrival-item.editing .edit-panel {{ display:block; }}
         .arrival-item .meta {{ font-size:11px; color:#94a3b8; margin-top:6px; }}
         .arrival-item .del-btn {{ color:#ef4444; cursor:pointer; padding:4px 8px; font-size:12px; flex-shrink:0; }}
         .arrival-item .del-btn:hover {{ text-decoration:underline; }}
     </style>
     <script>
         let arrivalItems = {items_json};
+        let editingArrivalId = null;
 
         function getSortedArrivalItems() {{
             const now = new Date();
@@ -1728,6 +1784,35 @@ def arrival():
             }});
         }}
 
+        function openArrivalEdit(id) {{
+            if (editingArrivalId === id) return;
+            closeArrivalEdit();
+            editingArrivalId = id;
+            const item = arrivalItems.find(i => i.id == id);
+            if (!item) return;
+            const row = document.getElementById('arrival-row-' + id);
+            if (row) row.classList.add('editing');
+            const cd = document.getElementById('cd-' + id);
+            if (cd) cd.classList.add('paused');
+            document.getElementById('edit-time-' + id).value = (item.target_time || '').replace(' ', 'T');
+            document.getElementById('edit-content-' + id).value = item.content || '';
+            document.getElementById('edit-important-' + id).value = item.content_important || '';
+            document.getElementById('edit-color-' + id).value = item.content_color || '#1a2a6c';
+            document.getElementById('edit-font-' + id).value = item.content_font || 'Malgun Gothic';
+            document.getElementById('edit-font-size-' + id).value = item.content_font_size || '16px';
+        }}
+
+        function closeArrivalEdit() {{
+            if (editingArrivalId) {{
+                const row = document.getElementById('arrival-row-' + editingArrivalId);
+                if (row) row.classList.remove('editing');
+                const cd = document.getElementById('cd-' + editingArrivalId);
+                if (cd) cd.classList.remove('paused');
+                editingArrivalId = null;
+            }}
+            updateAllCountdowns();
+        }}
+
         function renderArrivalList() {{
             const list = document.getElementById('arrivalList');
             if (arrivalItems.length === 0) {{
@@ -1738,26 +1823,65 @@ def arrival():
             list.innerHTML = sorted.map(item => {{
                 const targetTime = item.target_time || '';
                 const content = item.content || '';
+                const contentImportant = item.content_important || '';
+                const contentColor = item.content_color || '#1a2a6c';
+                const contentFont = item.content_font || 'Malgun Gothic';
+                const contentFontSize = item.content_font_size || '16px';
                 const contentEsc = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                const importantEsc = contentImportant.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                 const id = item.id;
-                return `<div class="arrival-item" data-id="${{id}}" id="arrival-row-${{id}}">
+                return `<div class="arrival-item" data-id="${{id}}" id="arrival-row-${{id}}" onclick="openArrivalEdit(${{id}})">
                     <div class="countdown" id="cd-${{id}}" data-target="${{targetTime}}"></div>
                     <div class="content-area">
-                        <div class="content-display" id="content-display-${{id}}">${{contentEsc || '(내용 없음)'}}</div>
-                        <textarea class="content-edit" id="content-edit-${{id}}" style="display:none;" onblur="saveArrivalContent(${{id}}, this.value)"></textarea>
+                        <div class="content-display" id="content-display-${{id}}" style="color:${{contentColor}}; font-family:${{contentFont}}; font-size:${{contentFontSize}};">${{contentEsc || '(내용 없음)'}}</div>
+                        <div id="important-wrap-${{id}}" style="margin-top:4px;">${{contentImportant ? '<span class=\"content-display\" id=\"important-display-' + id + '\" style=\"color:' + contentColor + '; font-family:' + contentFont + '; font-size:' + contentFontSize + '; font-weight:bold;\">★ ' + importantEsc + '</span>' : ''}}</div>
+                        <div class="edit-panel" onclick="event.stopPropagation()">
+                            <div style="margin-bottom:8px;">
+                                <label style="font-size:11px; color:#64748b;">시간</label>
+                                <input type="datetime-local" id="edit-time-${{id}}" class="content-edit" onblur="saveArrivalTime(${{id}}, this.value)">
+                            </div>
+                            <div style="margin-bottom:8px;">
+                                <label style="font-size:11px; color:#64748b;">내용</label>
+                                <input type="text" id="edit-content-${{id}}" class="content-edit" onblur="saveArrivalContent(${{id}}, this.value)">
+                            </div>
+                            <div style="margin-bottom:8px;">
+                                <label style="font-size:11px; color:#64748b;">중요내용</label>
+                                <input type="text" id="edit-important-${{id}}" class="content-edit" onblur="saveArrivalImportant(${{id}}, this.value)">
+                            </div>
+                            <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
+                                <div>
+                                    <label style="font-size:11px; color:#64748b;">색상</label>
+                                    <input type="color" id="edit-color-${{id}}" style="width:40px; height:32px; margin-left:4px; cursor:pointer;" onchange="saveArrivalStyle(${{id}})">
+                                </div>
+                                <div>
+                                    <label style="font-size:11px; color:#64748b;">폰트</label>
+                                    <select id="edit-font-${{id}}" style="padding:6px 10px; margin-left:4px; border:1px solid #cbd5e1; border-radius:4px;" onchange="saveArrivalStyle(${{id}})">
+                                        <option value="Malgun Gothic">맑은 고딕</option>
+                                        <option value="Apple SD Gothic Neo">Apple SD 고딕</option>
+                                        <option value="Arial">Arial</option>
+                                        <option value="Georgia">Georgia</option>
+                                        <option value="Nanum Gothic">나눔고딕</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="font-size:11px; color:#64748b;">폰트크기</label>
+                                    <select id="edit-font-size-${{id}}" style="padding:6px 10px; margin-left:4px; border:1px solid #cbd5e1; border-radius:4px;" onchange="saveArrivalStyle(${{id}})">
+                                        <option value="12px">12px</option>
+                                        <option value="14px">14px</option>
+                                        <option value="16px">16px</option>
+                                        <option value="18px">18px</option>
+                                        <option value="20px">20px</option>
+                                        <option value="24px">24px</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button type="button" onclick="closeArrivalEdit()" style="padding:6px 12px; background:#94a3b8; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">닫기</button>
+                        </div>
                         <div class="meta" id="meta-${{id}}"></div>
                     </div>
-                    <span class="del-btn" onclick="deleteArrivalItem(${{id}})">삭제</span>
+                    <span class="del-btn" onclick="event.stopPropagation(); deleteArrivalItem(${{id}})">삭제</span>
                 </div>`;
             }}).join('');
-
-            arrivalItems.forEach(item => {{
-                const displayEl = document.getElementById('content-display-' + item.id);
-                const editEl = document.getElementById('content-edit-' + item.id);
-                if (displayEl && editEl) {{
-                    displayEl.onclick = () => {{ displayEl.style.display='none'; editEl.value = item.content || ''; editEl.style.display='block'; editEl.focus(); }};
-                }}
-            }});
 
             updateAllCountdowns();
         }}
@@ -1778,6 +1902,11 @@ def arrival():
                 const el = document.getElementById('cd-' + item.id);
                 const metaEl = document.getElementById('meta-' + item.id);
                 if (!el) return;
+                if (editingArrivalId === item.id) {{
+                    el.textContent = '편집중';
+                    el.className = 'countdown paused';
+                    return;
+                }}
                 const targetStr = item.target_time;
                 if (!targetStr) {{
                     el.textContent = '-';
@@ -1796,8 +1925,7 @@ def arrival():
                 }} else {{
                     const h = Math.floor(diff / 3600000);
                     const m = Math.floor((diff % 3600000) / 60000);
-                    const s = Math.floor((diff % 60000) / 1000);
-                    el.textContent = (h > 0 ? h + '시간 ' : '') + m + '분 ' + s + '초';
+                    el.textContent = (h > 0 ? h + '시간 ' : '') + m + '분';
                     el.className = 'countdown' + (h < 1 ? ' warn' : '');
                     const parent = el.closest('.arrival-item');
                     if (parent) parent.classList.remove('expired');
@@ -1811,30 +1939,50 @@ def arrival():
                 String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
         }}
 
-        setInterval(function() {{ updateAllCountdowns(); reorderArrivalList(); }}, 1000);
+        setInterval(function() {{
+            if (editingArrivalId) return;
+            updateAllCountdowns();
+            reorderArrivalList();
+        }}, 60000);
 
         function addArrivalItem() {{
             const targetTime = document.getElementById('arrivalTargetTime').value;
             const content = document.getElementById('arrivalContent').value.trim();
+            const contentImportant = document.getElementById('arrivalContentImportant').value.trim();
+            const contentColor = document.getElementById('arrivalContentColor').value || '#1a2a6c';
+            const contentFont = document.getElementById('arrivalContentFont').value || 'Malgun Gothic';
+            const contentFontSize = document.getElementById('arrivalContentFontSize').value || '16px';
             fetch('/api/arrival/add', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ target_time: targetTime || null, content: content }})
+                body: JSON.stringify({{ target_time: targetTime || null, content: content, content_important: contentImportant, content_color: contentColor, content_font: contentFont, content_font_size: contentFontSize }})
             }}).then(r => r.json()).then(res => {{
                 if (res.status === 'success') {{
-                    arrivalItems.push({{ id: res.id, target_time: targetTime || null, content: content, order_idx: arrivalItems.length }});
+                    arrivalItems.push({{ id: res.id, target_time: targetTime || null, content: content, content_important: contentImportant, content_color: contentColor, content_font: contentFont, content_font_size: contentFontSize, order_idx: arrivalItems.length }});
                     document.getElementById('arrivalTargetTime').value = '';
                     document.getElementById('arrivalContent').value = '';
+                    document.getElementById('arrivalContentImportant').value = '';
                     renderArrivalList();
                 }}
             }});
         }}
 
+        function saveArrivalTime(id, value) {{
+            const targetTime = value ? value.replace('T', ' ') : null;
+            fetch('/api/arrival/update', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ id: id, target_time: targetTime }})
+            }}).then(r => r.json()).then(res => {{
+                if (res.status === 'success') {{
+                    const item = arrivalItems.find(i => i.id == id);
+                    if (item) item.target_time = targetTime;
+                    updateAllCountdowns();
+                }}
+            }});
+        }}
+
         function saveArrivalContent(id, value) {{
-            const displayEl = document.getElementById('content-display-' + id);
-            const editEl = document.getElementById('content-edit-' + id);
-            if (displayEl) displayEl.style.display = 'block';
-            if (editEl) editEl.style.display = 'none';
             fetch('/api/arrival/update', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
@@ -1843,7 +1991,49 @@ def arrival():
                 if (res.status === 'success') {{
                     const item = arrivalItems.find(i => i.id == id);
                     if (item) item.content = value;
+                    const displayEl = document.getElementById('content-display-' + id);
                     if (displayEl) displayEl.textContent = value || '(내용 없음)';
+                }}
+            }});
+        }}
+
+        function saveArrivalImportant(id, value) {{
+            fetch('/api/arrival/update', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ id: id, content_important: value }})
+            }}).then(r => r.json()).then(res => {{
+                if (res.status === 'success') {{
+                    const item = arrivalItems.find(i => i.id == id);
+                    if (item) item.content_important = value;
+                    const wrap = document.getElementById('important-wrap-' + id);
+                    if (wrap) {{
+                        const esc = (value || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                        const color = item.content_color || '#1a2a6c';
+                        const font = item.content_font || 'Malgun Gothic';
+                        const fontSize = item.content_font_size || '16px';
+                        wrap.innerHTML = value ? '<span class=\"content-display\" id=\"important-display-' + id + '\" style=\"color:' + color + '; font-family:' + font + '; font-size:' + fontSize + '; font-weight:bold;\">★ ' + esc + '</span>' : '';
+                    }}
+                }}
+            }});
+        }}
+
+        function saveArrivalStyle(id) {{
+            const color = document.getElementById('edit-color-' + id).value;
+            const font = document.getElementById('edit-font-' + id).value;
+            const fontSize = document.getElementById('edit-font-size-' + id).value;
+            fetch('/api/arrival/update', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ id: id, content_color: color, content_font: font, content_font_size: fontSize }})
+            }}).then(r => r.json()).then(res => {{
+                if (res.status === 'success') {{
+                    const item = arrivalItems.find(i => i.id == id);
+                    if (item) {{ item.content_color = color; item.content_font = font; item.content_font_size = fontSize; }}
+                    const displayEl = document.getElementById('content-display-' + id);
+                    const importantEl = document.getElementById('important-display-' + id);
+                    if (displayEl) {{ displayEl.style.color = color; displayEl.style.fontFamily = font; displayEl.style.fontSize = fontSize; }}
+                    if (importantEl) {{ importantEl.style.color = color; importantEl.style.fontFamily = font; importantEl.style.fontSize = fontSize; }}
                 }}
             }});
         }}
@@ -1868,11 +2058,15 @@ def arrival_add():
     d = request.json or {}
     target_time = d.get('target_time') or None
     content = d.get('content') or ''
+    content_important = d.get('content_important') or ''
+    content_color = d.get('content_color') or '#1a2a6c'
+    content_font = d.get('content_font') or 'Malgun Gothic'
+    content_font_size = d.get('content_font_size') or '16px'
     conn = sqlite3.connect('ledger.db')
     cursor = conn.cursor()
     cursor.execute("SELECT COALESCE(MAX(order_idx), -1) + 1 FROM arrival_status")
     next_idx = cursor.fetchone()[0]
-    cursor.execute("INSERT INTO arrival_status (target_time, content, order_idx) VALUES (?, ?, ?)", (target_time, content, next_idx))
+    cursor.execute("INSERT INTO arrival_status (target_time, content, content_important, content_color, content_font, content_font_size, order_idx) VALUES (?, ?, ?, ?, ?, ?, ?)", (target_time, content, content_important, content_color, content_font, content_font_size, next_idx))
     rid = cursor.lastrowid
     conn.commit(); conn.close()
     return jsonify({"status": "success", "id": rid})
@@ -1887,13 +2081,27 @@ def arrival_update():
             return jsonify({"status": "error", "message": "invalid id"}), 400
     except (ValueError, TypeError):
         return jsonify({"status": "error", "message": "invalid id"}), 400
-    content = d.get('content', '')
-    target_time = d.get('target_time')
     conn = sqlite3.connect('ledger.db')
-    if target_time is not None:
-        conn.execute("UPDATE arrival_status SET content=?, target_time=? WHERE id=?", (content, target_time, nid))
-    else:
-        conn.execute("UPDATE arrival_status SET content=? WHERE id=?", (content, nid))
+    cursor = conn.cursor()
+    cursor.execute("SELECT content, content_important, content_color, content_font, content_font_size, target_time FROM arrival_status WHERE id=?", (nid,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"status": "error", "message": "not found"}), 404
+    content, content_important, content_color, content_font, content_font_size, target_time = row[0] or '', row[1] or '', row[2] or '#1a2a6c', row[3] or 'Malgun Gothic', row[4] or '16px', row[5]
+    if 'content' in d:
+        content = d.get('content', '')
+    if 'content_important' in d:
+        content_important = d.get('content_important', '')
+    if 'content_color' in d:
+        content_color = d.get('content_color', '#1a2a6c')
+    if 'content_font' in d:
+        content_font = d.get('content_font', 'Malgun Gothic')
+    if 'content_font_size' in d:
+        content_font_size = d.get('content_font_size', '16px')
+    if 'target_time' in d:
+        target_time = d.get('target_time')
+    conn.execute("UPDATE arrival_status SET content=?, content_important=?, content_color=?, content_font=?, content_font_size=?, target_time=? WHERE id=?", (content, content_important, content_color, content_font, content_font_size, target_time, nid))
     conn.commit(); conn.close()
     return jsonify({"status": "success"})
 
