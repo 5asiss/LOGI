@@ -24,6 +24,8 @@
 - [ ] HTTPS 사용 시 리버스 프록시(Nginx 등) 뒤에서 실행하고 `HTTPS=1` 설정
 - [ ] `ledger.db`, `static/evidences/` 등 데이터·업로드 경로 백업 및 권한 설정
 - [ ] 방화벽에서 필요한 포트만 개방
+- [ ] `ledger.db`가 git에 커밋되지 않도록 확인 (민감 데이터)
+- [ ] Gunicorn 사용 시: `gunicorn -w 4 -b 0.0.0.0:5000 app:app`
 
 ## Linux 예시 (systemd 또는 실행 전)
 

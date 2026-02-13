@@ -1,0 +1,21 @@
+# 에스엠 로지텍 - 환경변수 템플릿
+# 이 파일을 .env 로 복사한 후 값을 수정하세요.
+# .env 파일은 .gitignore에 포함되어 커밋되지 않습니다.
+
+# [필수 - 배포 시] 세션 암호화용 비밀키 (openssl rand -hex 32 로 생성 권장)
+FLASK_SECRET_KEY=your-secret-key-change-this
+
+# [필수 - 배포 시] 관리자 비밀번호 (기본 1234 사용 금지)
+ADMIN_PW=1234
+
+# [선택] 관리자 아이디 (기본: admin)
+ADMIN_ID=admin
+
+# [선택] 서버 포트 (기본: 5000)
+PORT=5000
+
+# [선택] 디버그 모드 - 1/true 시 활성화, 배포 시 미설정 또는 0
+# FLASK_DEBUG=0
+
+# [선택] HTTPS 사용 시 1 설정 (세션 쿠키 Secure 플래그)
+# HTTPS=1

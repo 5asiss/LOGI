@@ -1,12 +1,46 @@
 from flask import Flask, render_template_string, request, jsonify, send_file, session, redirect, url_for
 from werkzeug.utils import secure_filename
 import pandas as pd
+
+# .env 파일 로드 (python-dotenv)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 import io
 import json
 import sqlite3
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
+
+# 한국시간(KST, UTC+9) 설정
+KST = timezone(timedelta(hours=9))
+
+def now_kst():
+    """현재 한국시간 반환"""
+    return datetime.now(KST)
+
+def safe_int(val, default=1):
+    """사용자 입력을 안전하게 정수로 변환 (잘못된 입력 시 default 반환)"""
+    try:
+        return int(val) if val is not None and str(val).strip() else default
+    except (ValueError, TypeError):
+        return default
+
+def to_kst_str(ts_val):
+    """DB 타임스탬프(UTC 가정)를 한국시간 문자열로 변환"""
+    if ts_val is None: return ''
+    try:
+        s = str(ts_val)[:19]
+        if not s or len(s) < 19: return str(ts_val)
+        dt = datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
+        dt_utc = dt.replace(tzinfo=timezone.utc)
+        dt_kst = dt_utc.astimezone(KST)
+        return dt_kst.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return str(ts_val)
 from collections import defaultdict
 
 app = Flask(__name__)
@@ -131,7 +165,7 @@ def init_db():
             '은행명' TEXT, '예금주' TEXT
         )
     """)
-    # (이하 생략 - 기존 activity_logs, clients, dashboard_notes 유지)
+    # (이하 생략 - 기존 activity_logs, clients 유지)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS activity_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,19 +176,6 @@ def init_db():
     )
     """)
 
-    cursor.execute("CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT, " + ", ".join([f"'{c}' TEXT" for c in CLIENT_COLS]) + ")")
-
-    # [현황판 전용 테이블 추가]
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS dashboard_notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content TEXT,
-        pos_x INTEGER DEFAULT 100,
-        pos_y INTEGER DEFAULT 100,
-        width INTEGER DEFAULT 220,
-        height INTEGER DEFAULT 180
-    )
-    """)
 
     conn.commit()
     conn.close()
@@ -265,7 +286,8 @@ BASE_HTML = """
     <div class="nav">
         <div class="nav-links">
             <a href="/">통합장부입력</a>
-            <a href="/dashboard">현황판(메모)</a> <a href="/settlement">정산관리</a>
+            <a href="/arrival">도착현황</a>
+            <a href="/settlement">정산관리</a>
             <a href="/statistics">통계분석</a>
             <a href="/manage_drivers">기사관리</a>
             <a href="/manage_clients">업체관리</a>
@@ -284,6 +306,21 @@ BASE_HTML = """
     let columnKeys = {{ col_keys | safe }};
     let lastLedgerData = [];
     let currentEditId = null;
+
+    {% raw %}
+    window.viewImg = function(src) {
+        if(!src || src.includes('❌') || src === '/' || src.includes('None') || src == '') return;
+        let path = (typeof src === 'string') ? src.trim() : '';
+        if(path.includes(',')) path = path.split(',')[0].trim();
+        if(path && path.startsWith('static')) {
+            document.getElementById('modalImg').src = '/' + path;
+            document.getElementById('imgModal').style.display = 'block';
+        }
+    };
+    {% endraw %}
+
+    function todayKST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); }
+    function nowKSTLocal() { const s = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Seoul', hour12: false }); return s.replace(' ', 'T').slice(0, 16); }
 
     // 초성 추출 함수
     const getChosung = (str) => {
@@ -386,8 +423,8 @@ BASE_HTML = """
                     data.d_phone = driver.연락처 || ''; data.bank_acc = driver.계좌번호 || ''; 
                     data.tax_biz_num = driver.사업자번호 || ''; data.tax_biz_name = driver.사업자 || '';
                 }
-                data.order_dt = data.order_dt || new Date().toISOString().split('T')[0];
-                data.dispatch_dt = data.dispatch_dt || new Date().toISOString().slice(0,16);
+                data.order_dt = data.order_dt || (typeof todayKST === 'function' ? todayKST() : new Date().toISOString().split('T')[0]);
+                data.dispatch_dt = data.dispatch_dt || (typeof nowKSTLocal === 'function' ? nowKSTLocal() : new Date().toISOString().slice(0,16));
             }
             if (currentEditId) data['id'] = currentEditId;
             fetch('/api/save_ledger', {
@@ -403,14 +440,15 @@ BASE_HTML = """
             });
         }
 
-        // 빠른 기간 설정 함수
+        // 빠른 기간 설정 함수 (한국시간 기준)
 function setDateRange(days) {
-    const end = new Date();
-    const start = new Date();
+    const endStr = typeof todayKST === 'function' ? todayKST() : new Date().toISOString().split('T')[0];
+    const end = new Date(endStr + 'T12:00:00');
+    const start = new Date(end);
     start.setDate(start.getDate() - days);
-    
-    document.getElementById('startDate').value = start.toISOString().split('T')[0];
-    document.getElementById('endDate').value = end.toISOString().split('T')[0];
+    const startStr = start.toISOString().split('T')[0];
+    document.getElementById('startDate').value = startStr;
+    document.getElementById('endDate').value = endStr;
     loadLedgerList();
 }
 
@@ -460,7 +498,8 @@ function loadLedgerList() {
                     let btns = '<div style="display:flex; gap:2px; justify-content:center;">';
                     for(let i=0; i<5; i++) {
                         let p = (paths[i] && paths[i].startsWith('static')) ? paths[i] : '';
-                        if(p) btns += `<button class="img-num-btn active" onclick="viewImg('${p}')">${i+1}</button>`;
+                        let safe = p ? p.replace(/'/g, "\\'") : '';
+                        if(p) btns += `<button class="img-num-btn active" onclick="viewImg('${safe}')">${i+1}</button>`;
                         else btns += `<button class="img-num-btn" style="cursor:default; color:#ccc;">${i+1}</button>`;
                     }
                     return `<td>${btns}</div></td>`;
@@ -736,12 +775,14 @@ def settlement():
     # 시작일, 종료일 검색 값을 URL에서 가져옵니다.
     q_status = request.args.get('status', ''); q_name = request.args.get('name', '')
     q_start = request.args.get('start', ''); q_end = request.args.get('end', '')
-    page = int(request.args.get('page', 1)); per_page = 50
+    page = max(1, safe_int(request.args.get('page'), 1))
+    per_page = 50
     
     rows = conn.execute("SELECT * FROM ledger ORDER BY dispatch_dt DESC").fetchall(); conn.close()
     
     filtered_rows = []
-    today = datetime.now()
+    today = now_kst()
+    today_naive = today.replace(tzinfo=None)  # naive용 비교 (DB 날짜는 timezone 없음)
     
     for row in rows:
         in_dt = row['in_dt']; out_dt = row['out_dt']; pay_due_dt = row['pay_due_dt']
@@ -758,7 +799,7 @@ def settlement():
             if dispatch_dt_str:
                 try:
                     d_dt = datetime.fromisoformat(dispatch_dt_str.replace(' ', 'T'))
-                    if today > d_dt + timedelta(days=30): is_over_30 = True
+                    if today_naive > d_dt + timedelta(days=30): is_over_30 = True
                 except: pass
             
             is_due_passed = False
@@ -905,8 +946,9 @@ def statistics():
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     filtered_rows = []
     
-    # 기사 타입 정보 매핑
-    drivers_type = {d.get('기사명', ''): d.get('개인/고정', '일반') for d in drivers_db}
+    # 기사관리(기사현황)에서 개인/고정="고정"인 차량번호 목록 (차량번호 기준 필터)
+    fixed_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '고정'}
+    fixed_c_nums.discard('')  # 빈 문자열 제외
 
     for row in rows:
         r = dict(row)
@@ -920,12 +962,15 @@ def statistics():
         in_dt = r.get('in_dt'); out_dt = r.get('out_dt')
         m_st = "수금완료" if in_dt else ("조건부미수" if not r.get('pre_post') and not r.get('pay_due_dt') else "미수")
         p_st = "지급완료" if out_dt else ("조건부미지급" if not in_dt else "미지급")
-        d_type = "직영" if drivers_type.get(r.get('d_name', ''), '') == "고정" else "일반"
+        # 고정 여부: 기사관리 차량번호 기준 (해당 차량번호의 장부 데이터만)
+        c_num = str(r.get('c_num', '')).strip()
+        d_type = "직영" if c_num in fixed_c_nums else "일반"
 
         # 세부 상태 필터
         if q_status:
             if q_status in ["미수", "조건부미수", "수금완료"] and q_status != m_st: continue
             if q_status in ["미지급", "조건부미지급", "지급완료"] and q_status != p_st: continue
+            if q_status == "고정" and c_num not in fixed_c_nums: continue
             if q_status in ["직영", "일반"] and q_status != d_type: continue
 
         r['m_st'] = m_st; r['p_st'] = p_st; r['d_type'] = d_type
@@ -950,10 +995,20 @@ def statistics():
         for date, v in d_grp.iterrows():
             summary_daily += f"<tr><td>{date}</td><td>{v['id']}</td><td>{int(v['fee']):,}</td><td>{int(v['fee_out']):,}</td></tr>"
 
-        # 업체 정산 데이터 조립: 기사명 → 업체명 → 입금일 → 오더일 → 노선 → 기사운임 → 지급상태
-        for _, r in df.sort_values(by=['client_name', 'order_dt'], ascending=[True, False]).iterrows():
-            in_dt = r.get('in_dt') or ''
-            full_settlement_client += f"<tr><td>{r.get('d_name','')}</td><td>{r.get('client_name','')}</td><td>{in_dt}</td><td>{r['order_dt']}</td><td>{r['route']}</td><td style='text-align:right;'>{int(r['fee_out']):,}</td><td>{r['p_st']}</td></tr>"
+        # 업체 정산 데이터 조립: 업체별 "수신 [업체명] 정산서" 형식, 오더일|노선|업체운임|미수
+        for client_name, grp in df.sort_values(by=['client_name', 'order_dt'], ascending=[True, False]).groupby('client_name'):
+            cname = str(client_name or '').strip() or '(업체명 없음)'
+            cname_attr = cname.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+            cname_display = cname.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            grp_fee_sum = int(grp['fee'].sum())
+            full_settlement_client += f"""
+            <div class="client-settle-card" data-client="{cname_attr}">
+                <div class="client-settle-title">수신 「{cname_display}」 정산서</div>
+                <table class="client-settle-table"><thead><tr><th>오더일</th><th>노선</th><th>업체운임</th><th>미수</th></tr></thead><tbody>"""
+            for _, r in grp.iterrows():
+                fee_val = int(float(r.get('fee', 0) or 0))
+                full_settlement_client += f"<tr><td>{r['order_dt']}</td><td>{r.get('route','')}</td><td style='text-align:right;'>{fee_val:,}</td><td>{r['m_st']}</td></tr>"
+            full_settlement_client += f"<tr class='client-sum-row'><td colspan='2'>합계</td><td style='text-align:right; font-weight:bold;'>{grp_fee_sum:,}</td><td>-</td></tr></tbody></table></div>"
 
         # 기사 정산 데이터 조립: 기사명, 업체명, 입금일, 오더일, 노선, 기사운임, 지급상태 + 기사별 소계 + 총합계
         driver_grand_total = 0
@@ -976,6 +1031,14 @@ def statistics():
         .tab-content {{ display: none; border: 1px solid #ddd; padding: 20px; background: white; border-radius: 0 0 5px 5px; }}
         .tab-content.active {{ display: block; }}
         #printArea {{ position: fixed; left: -9999px; top: 0; background: white; width: 850px; }}
+        .client-settle-sections {{ display: flex; flex-direction: column; gap: 24px; }}
+        .client-settle-card {{ background: #fafbfc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }}
+        .client-settle-title {{ background: linear-gradient(135deg, #1a2a6c 0%, #2c3e7a 100%); color: white; padding: 14px 20px; font-size: 16px; font-weight: bold; letter-spacing: 0.5px; }}
+        .client-settle-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+        .client-settle-table th {{ background: #f1f5f9; padding: 10px 12px; text-align: center; border-bottom: 2px solid #e2e8f0; font-weight: 600; color: #334155; }}
+        .client-settle-table td {{ padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }}
+        .client-settle-table .client-sum-row {{ background: #e8f0e8; font-weight: bold; }}
+        .settle-footer-msg {{ margin-top: 28px; padding-top: 16px; border-top: 2px solid #e2e8f0; text-align: right; font-size: 16px; font-weight: bold; color: #1a2a6c; letter-spacing: 2px; }}
     </style>
 
     <div id="printArea"><div id="printContent"></div></div>
@@ -1017,7 +1080,7 @@ def statistics():
                 <h4 style="margin:0;">🧾 업체별 상세 매출 및 수금 현황</h4>
                 <button onclick="captureSettle('clientZone')" class="btn-status bg-orange">🖼️ 업체 정산서 이미지 저장</button>
             </div>
-            <div class="table-scroll" id="raw_client"><table><thead><tr style="background:#f2f2f2;"><th>기사명</th><th>업체명</th><th>입금일</th><th>오더일</th><th>노선</th><th>기사운임</th><th>지급상태</th></tr></thead><tbody>{full_settlement_client}</tbody></table></div>
+            <div class="table-scroll" id="raw_client"><div class="client-settle-sections">{full_settlement_client}</div><div class="settle-footer-msg">에스엠 로지텍 발신</div></div>
         </div>
 
         <div id="driverZone" class="tab-content">
@@ -1044,20 +1107,28 @@ def statistics():
             const printContent = document.getElementById('printContent');
             const isDriver = (zoneId === 'driverZone');
             const targetId = isDriver ? 'raw_driver' : 'raw_client';
-            const title = isDriver ? '기사 정산서' : '에스엠 로지스 정산서';
-            const fileName = isDriver ? '기사정산서_' + new Date().getTime() + '.png' : '에스엠로지스_정산서_' + new Date().getTime() + '.png';
+            const fileName = isDriver ? '기사정산서_' + new Date().getTime() + '.png' : '업체정산서_' + new Date().getTime() + '.png';
             const targetEl = document.getElementById(targetId);
-            let tableHtml;
-            tableHtml = '<table border="1" style="width:100%; border-collapse:collapse; font-size:14px; text-align:center;"><thead><tr style="background:#f2f2f2;"><th>기사명</th><th>업체명</th><th>입금일</th><th>오더일</th><th>노선</th><th>기사운임</th><th>지급상태</th></tr></thead><tbody>' + (targetEl.querySelector('tbody').innerHTML) + '</tbody></table>';
-
-            printContent.innerHTML = `
-                <div style="padding:40px; background:white; font-family: 'Malgun Gothic', sans-serif;">
-                    <h1 style="text-align:center; font-size:32px; border-bottom:3px solid #000; padding-bottom:15px; margin-bottom:20px;">${{title}}</h1>
-                    <div style="text-align:right; margin-bottom:10px;">출력일: ${{new Date().toLocaleDateString()}}</div>
-                    ${{tableHtml}}
-                    <div style="text-align:right; margin-top:40px; font-weight:bold; font-size:24px;">에스엠 로지스 (인)</div>
-                </div>
-            `;
+            let bodyHtml;
+            if (isDriver) {{
+                bodyHtml = '<table border="1" style="width:100%; border-collapse:collapse; font-size:14px; text-align:center;"><thead><tr style="background:#f2f2f2;"><th>기사명</th><th>업체명</th><th>입금일</th><th>오더일</th><th>노선</th><th>기사운임</th><th>지급상태</th></tr></thead><tbody>' + (targetEl.querySelector('tbody').innerHTML) + '</tbody></table>';
+                printContent.innerHTML = `
+                    <div style="padding:40px; background:white; font-family: 'Malgun Gothic', sans-serif;">
+                        <h1 style="text-align:center; font-size:32px; border-bottom:3px solid #000; padding-bottom:15px; margin-bottom:20px;">기사 정산서</h1>
+                        <div style="text-align:right; margin-bottom:10px;">출력일: ${{new Date().toLocaleDateString('ko-KR', {{ timeZone: 'Asia/Seoul' }})}}</div>
+                        ${{bodyHtml}}
+                        <div style="text-align:right; margin-top:40px; font-weight:bold; font-size:24px;">에스엠 로지텍 (인)</div>
+                    </div>
+                `;
+            }} else {{
+                bodyHtml = targetEl.innerHTML;
+                printContent.innerHTML = `
+                    <div style="padding:40px; background:white; font-family: 'Malgun Gothic', sans-serif; max-width:800px;">
+                        <div style="text-align:right; margin-bottom:20px; font-size:13px; color:#64748b;">출력일: ${{new Date().toLocaleDateString('ko-KR', {{ timeZone: 'Asia/Seoul' }})}}</div>
+                        <div style="margin-bottom:30px;">${{bodyHtml}}</div>
+                    </div>
+                `;
+            }}
             
             area.style.left = '0';
             try {{
@@ -1276,7 +1347,9 @@ def export_stats():
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     
-    drivers_type = {dr.get('기사명', ''): dr.get('개인/고정', '일반') for dr in drivers_db}
+    # 기사관리에서 개인/고정="고정"인 차량번호 목록 (차량번호 기준)
+    fixed_c_nums = {str(dr.get('차량번호', '')).strip() for dr in drivers_db if str(dr.get('개인/고정', '')).strip() == '고정'}
+    fixed_c_nums.discard('')
     export_data = []
 
     for row in rows:
@@ -1285,7 +1358,8 @@ def export_stats():
         in_dt = r.get('in_dt'); out_dt = r.get('out_dt')
         m_st = "수금완료" if in_dt else ("조건부미수" if not r.get('pre_post') and not r.get('pay_due_dt') else "미수")
         p_st = "지급완료" if out_dt else ("조건부미지급" if not in_dt else "미지급")
-        d_type = "직영" if drivers_type.get(r.get('d_name', ''), '') == "고정" else "일반"
+        c_num = str(r.get('c_num', '')).strip()
+        d_type = "직영" if c_num in fixed_c_nums else "일반"
 
         # 필터링
         if s and e and not (s <= (r['order_dt'] or "") <= e): continue
@@ -1294,6 +1368,7 @@ def export_stats():
         if st:
             if st in ["미수", "조건부미수", "수금완료"] and st != m_st: continue
             if st in ["미지급", "조건부미지급", "지급완료"] and st != p_st: continue
+            if st == "고정" and c_num not in fixed_c_nums: continue
             if st in ["직영", "일반"] and st != d_type: continue
 
         export_data.append({
@@ -1307,12 +1382,17 @@ def export_stats():
     with pd.ExcelWriter(out, engine='openpyxl') as w:
         df.to_excel(w, index=False, sheet_name='통계데이터')
     out.seek(0)
-    return send_file(out, as_attachment=True, download_name=f"SM_Logis_Stats_{datetime.now().strftime('%y%m%d')}.xlsx")
+    return send_file(out, as_attachment=True, download_name=f"SM_Logis_Stats_{now_kst().strftime('%y%m%d')}.xlsx")
 
 @app.route('/upload_evidence/<int:ledger_id>', methods=['GET', 'POST'])
 @login_required 
 def upload_evidence(ledger_id):
-    target_type = request.args.get('type', 'all'); target_seq = request.args.get('seq', '1')
+    target_type = request.args.get('type', 'all')
+    try:
+        seq_val = int(request.args.get('seq', 1) or 1)
+        target_seq = str(max(1, min(5, seq_val)))
+    except (ValueError, TypeError):
+        target_seq = '1'
     if request.method == 'POST':
         tax_file, ship_file = request.files.get('tax_file'), request.files.get('ship_file')
         conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
@@ -1324,7 +1404,8 @@ def upload_evidence(ledger_id):
         def update_p(old, new, seq):
             plist = [p.strip() for p in old.split(',')] if old else [""] * 5
             while len(plist) < 5: plist.append("")
-            plist[int(seq)-1] = new
+            idx = max(0, min(4, int(seq) - 1)) if str(seq).isdigit() else 0
+            plist[idx] = new
             return ",".join(plist)
         if tax_file and tax_file.filename:
             safe_name = secure_filename(tax_file.filename) or "upload.jpg"
@@ -1370,13 +1451,20 @@ def upload_evidence(ledger_id):
 @app.route('/api/save_ledger', methods=['POST'])
 @login_required 
 def save_ledger_api():
-    data = request.json
+    data = request.json or {}
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "invalid request"}), 400
     conn = sqlite3.connect('ledger.db')
     cursor = conn.cursor()
     
     keys = [c['k'] for c in FULL_COLUMNS]
     if 'id' in data and data['id']:
-        target_id = data['id']
+        try:
+            target_id = int(data['id'])
+            if target_id <= 0:
+                return jsonify({"status": "error", "message": "invalid id"}), 400
+        except (ValueError, TypeError):
+            return jsonify({"status": "error", "message": "invalid id"}), 400
         action_type = "수정"
         sql = ", ".join([f"'{k}' = ?" for k in keys])
         vals = [data.get(k, '') for k in keys] + [target_id]
@@ -1414,7 +1502,6 @@ def save_ledger_api():
 @login_required
 def get_order_logs(order_id):
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
-    # 전체 이력을 시간 역순으로 조회하여 모든 변경사항이 누락 없이 나오게 함
     logs = conn.execute("""
         SELECT timestamp, action, details 
         FROM activity_logs 
@@ -1422,7 +1509,12 @@ def get_order_logs(order_id):
         ORDER BY timestamp DESC
     """, (order_id,)).fetchall()
     conn.close()
-    return jsonify([dict(l) for l in logs])
+    result = []
+    for l in logs:
+        d = dict(l)
+        d['timestamp'] = to_kst_str(d.get('timestamp'))
+        result.append(d)
+    return jsonify(result)
 
 @app.route('/api/get_logs')
 @login_required
@@ -1430,7 +1522,13 @@ def get_logs():
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     logs = conn.execute("SELECT * FROM activity_logs ORDER BY id DESC LIMIT 50").fetchall()
     conn.close()
-    return jsonify([dict(l) for l in logs])
+    result = []
+    for l in logs:
+        d = dict(l)
+        if 'timestamp' in d:
+            d['timestamp'] = to_kst_str(d['timestamp'])
+        result.append(d)
+    return jsonify(result)
 
 @app.route('/api/load_db_mem')
 @login_required 
@@ -1439,7 +1537,7 @@ def api_load_db_mem(): load_db_to_mem(); return jsonify({"drivers": drivers_db, 
 @app.route('/api/get_ledger')
 @login_required 
 def get_ledger():
-    page = int(request.args.get('page', 1))
+    page = max(1, safe_int(request.args.get('page'), 1))
     per_page = 50
     start_dt = request.args.get('start', '')
     end_dt = request.args.get('end', '')
@@ -1489,13 +1587,19 @@ def update_status():
     key = data.get('key')
     if key not in ALLOWED_STATUS_KEYS:
         return jsonify({"status": "error", "message": "invalid key"}), 400
+    try:
+        row_id = int(data.get('id', 0))
+        if row_id <= 0:
+            return jsonify({"status": "error", "message": "invalid id"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"status": "error", "message": "invalid id"}), 400
     conn = sqlite3.connect('ledger.db')
     cursor = conn.cursor()
     display_name = next((col['n'] for col in FULL_COLUMNS if col['k'] == key), key)
-    cursor.execute(f"UPDATE ledger SET [{key}] = ? WHERE id = ?", (data.get('value'), data.get('id')))
+    cursor.execute(f"UPDATE ledger SET [{key}] = ? WHERE id = ?", (data.get('value'), row_id))
     log_details = f"[{display_name}] 항목이 '{data.get('value')}'(으)로 변경됨"
     cursor.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)",
-                   ("상태변경", data.get('id'), log_details))
+                   ("상태변경", row_id, log_details))
     conn.commit()
     conn.close()
     return jsonify({"status": "success"})
@@ -1568,193 +1672,268 @@ def manage_clients():
     </div>
     <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
-# --- [신규: 현황판(대시보드) 라우트 및 API] ---
-
-def _escape_note(s):
-    if s is None: return ""
-    s = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-    return s
-
-def _note_style(n):
-    """메모 위치/크기 값 안전 처리 (NULL 시 기본값)"""
-    x = n.get('pos_x'); y = n.get('pos_y'); w = n.get('width'); h = n.get('height')
-    x = 100 if x is None else int(x)
-    y = 100 if y is None else int(y)
-    w = 220 if w is None else int(w)
-    h = 180 if h is None else int(h)
-    return f"left:{x}px; top:{y}px; width:{w}px; height:{h}px;"
-
-@app.route('/dashboard')
+# --- [도착현황 라우트 및 API] ---
+@app.route('/arrival')
 @login_required
-def dashboard():
+def arrival():
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM dashboard_notes").fetchall(); conn.close()
-    notes = [dict(r) for r in rows]
-    
-    notes_html = ""
-    for n in notes:
-        nid = n.get('id')
-        if nid is None:
-            continue
-        nid = int(nid)
-        safe_content = _escape_note(n.get('content'))
-        style = _note_style(n)
-        notes_html += f"""
-        <div class="sticky-note" id="note_{nid}" style="{style}">
-            <div class="note-header" onmousedown="dragStart(event, {nid})">
-                <span>📌 개인 메모</span>
-                <span class="note-delete-btn" onmousedown="event.stopPropagation(); event.preventDefault(); deleteNote({nid})" title="삭제">×</span>
-            </div>
-            <textarea class="note-content" data-note-id="{nid}" onchange="updateNote({nid}, this.value)" oninput="debouncedSaveNote({nid}, this)">{safe_content}</textarea>
-        </div>"""
+    rows = conn.execute("SELECT * FROM arrival_status ORDER BY order_idx ASC, id ASC").fetchall(); conn.close()
+    items = [dict(r) for r in rows]
+    items_json = json.dumps(items, ensure_ascii=False)
 
     content = f"""
     <div class="section">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <h2 style="margin:0;">📋 현황판 메모</h2>
-            <div style="display:flex; gap:8px;">
-                <button onclick="addNote()" class="btn-save">+ 새 메모 추가</button>
-                <button onclick="deleteAllNotes()" class="btn-status bg-red">메모 전체 삭제</button>
+        <h2>🚚 도착현황</h2>
+        <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:20px; padding:15px; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0;">
+            <div>
+                <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">도착 예정 시간</label>
+                <input type="datetime-local" id="arrivalTargetTime" style="width:200px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
             </div>
+            <div style="flex:1; min-width:200px;">
+                <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">내용 (자유 입력)</label>
+                <input type="text" id="arrivalContent" placeholder="예: 서울→부산 12톤 김기사" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
+            </div>
+            <button onclick="addArrivalItem()" class="btn-save" style="padding:8px 18px;">추가</button>
         </div>
-        <div class="board-container" id="board">{notes_html}</div>
+        <div class="arrival-list" id="arrivalList"></div>
     </div>
+    <style>
+        .arrival-item {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:14px 16px; margin-bottom:10px; display:flex; align-items:flex-start; gap:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05); }}
+        .arrival-item.expired {{ background:#fef2f2; border-color:#fecaca; }}
+        .arrival-item .countdown {{ font-size:20px; font-weight:700; color:#1a2a6c; min-width:140px; flex-shrink:0; }}
+        .arrival-item .countdown.warn {{ color:#dc2626; }}
+        .arrival-item .countdown.done {{ color:#64748b; font-size:14px; }}
+        .arrival-item .content-area {{ flex:1; word-break:break-all; line-height:1.5; }}
+        .arrival-item .content-display {{ cursor:pointer; padding:4px 8px; margin:-4px -8px; border-radius:4px; }}
+        .arrival-item .content-display:hover {{ background:#f1f5f9; }}
+        .arrival-item .content-edit {{ width:100%; border:1px solid #e2e8f0; padding:6px 10px; border-radius:4px; font-size:13px; min-height:60px; resize:vertical; }}
+        .arrival-item .meta {{ font-size:11px; color:#94a3b8; margin-top:6px; }}
+        .arrival-item .del-btn {{ color:#ef4444; cursor:pointer; padding:4px 8px; font-size:12px; flex-shrink:0; }}
+        .arrival-item .del-btn:hover {{ text-decoration:underline; }}
+    </style>
     <script>
-        let activeNote = null;
-        let startX, startY, initialX, initialY;
-        let saveTimeouts = {{}};
+        let arrivalItems = {items_json};
 
-        function addNote() {{ fetch('/api/dashboard/add', {{method:'POST'}}).then(()=>location.reload()); }}
-        function deleteNote(id) {{ if(confirm('이 메모를 삭제할까요? 삭제하면 복구할 수 없습니다.')) fetch('/api/dashboard/delete/'+id, {{method:'POST'}}).then(()=>location.reload()); }}
-        function deleteAllNotes() {{ if(confirm('모든 메모를 삭제할까요? 복구할 수 없습니다.')) fetch('/api/dashboard/delete_all', {{method:'POST'}}).then(()=>location.reload()); }}
-        function updateNote(id, content) {{
-            fetch('/api/dashboard/update', {{
-                method:'POST',
-                headers:{{'Content-Type':'application/json'}},
-                body: JSON.stringify({{id:id, content:content}})
+        function getSortedArrivalItems() {{
+            const now = new Date();
+            return [...arrivalItems].sort((a, b) => {{
+                const ta = a.target_time ? new Date(a.target_time.replace(' ', 'T')) : null;
+                const tb = b.target_time ? new Date(b.target_time.replace(' ', 'T')) : null;
+                const aPast = !ta || ta <= now;
+                const bPast = !tb || tb <= now;
+                if (aPast && !bPast) return 1;
+                if (!aPast && bPast) return -1;
+                if (aPast && bPast) return (tb || 0) - (ta || 0);
+                return ta - tb;
             }});
         }}
-        function debouncedSaveNote(id, el) {{
-            if(saveTimeouts[id]) clearTimeout(saveTimeouts[id]);
-            saveTimeouts[id] = setTimeout(function() {{ updateNote(id, el.value); }}, 600);
+
+        function renderArrivalList() {{
+            const list = document.getElementById('arrivalList');
+            if (arrivalItems.length === 0) {{
+                list.innerHTML = '<p style="color:#94a3b8; padding:30px; text-align:center;">등록된 항목이 없습니다. 위에서 시간과 내용을 입력 후 추가해 주세요.</p>';
+                return;
+            }}
+            const sorted = getSortedArrivalItems();
+            list.innerHTML = sorted.map(item => {{
+                const targetTime = item.target_time || '';
+                const content = item.content || '';
+                const contentEsc = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                const id = item.id;
+                return `<div class="arrival-item" data-id="${{id}}" id="arrival-row-${{id}}">
+                    <div class="countdown" id="cd-${{id}}" data-target="${{targetTime}}"></div>
+                    <div class="content-area">
+                        <div class="content-display" id="content-display-${{id}}">${{contentEsc || '(내용 없음)'}}</div>
+                        <textarea class="content-edit" id="content-edit-${{id}}" style="display:none;" onblur="saveArrivalContent(${{id}}, this.value)"></textarea>
+                        <div class="meta" id="meta-${{id}}"></div>
+                    </div>
+                    <span class="del-btn" onclick="deleteArrivalItem(${{id}})">삭제</span>
+                </div>`;
+            }}).join('');
+
+            arrivalItems.forEach(item => {{
+                const displayEl = document.getElementById('content-display-' + item.id);
+                const editEl = document.getElementById('content-edit-' + item.id);
+                if (displayEl && editEl) {{
+                    displayEl.onclick = () => {{ displayEl.style.display='none'; editEl.value = item.content || ''; editEl.style.display='block'; editEl.focus(); }};
+                }}
+            }});
+
+            updateAllCountdowns();
         }}
 
-        function dragStart(e, id) {{
-            if(e.target.tagName === 'TEXTAREA') return;
-            if(e.target.classList && e.target.classList.contains('note-delete-btn')) return;
-            if(e.target.closest && e.target.closest('.note-delete-btn')) return;
-            activeNote = document.getElementById('note_' + id);
-            if(!activeNote) return;
-            startX = e.clientX; startY = e.clientY;
-            initialX = activeNote.offsetLeft; initialY = activeNote.offsetTop;
-            document.onmousemove = dragMove; document.onmouseup = dragEnd;
+        function reorderArrivalList() {{
+            const list = document.getElementById('arrivalList');
+            if (!list || list.querySelector('.arrival-item') === null) return;
+            const sorted = getSortedArrivalItems();
+            sorted.forEach(item => {{
+                const row = document.getElementById('arrival-row-' + item.id);
+                if (row) list.appendChild(row);
+            }});
         }}
-        function dragMove(e) {{
-            if(!activeNote) return;
-            e.preventDefault();
-            activeNote.style.left = (initialX + e.clientX - startX) + 'px';
-            activeNote.style.top = (initialY + e.clientY - startY) + 'px';
+
+        function updateAllCountdowns() {{
+            const now = new Date();
+            arrivalItems.forEach(item => {{
+                const el = document.getElementById('cd-' + item.id);
+                const metaEl = document.getElementById('meta-' + item.id);
+                if (!el) return;
+                const targetStr = item.target_time;
+                if (!targetStr) {{
+                    el.textContent = '-';
+                    el.className = 'countdown done';
+                    if (metaEl) metaEl.textContent = '시간 미지정';
+                    return;
+                }}  
+                const target = new Date(targetStr.replace(' ', 'T'));
+                const diff = target - now;
+                if (diff <= 0) {{
+                    el.textContent = '도착 완료';
+                    el.className = 'countdown done';
+                    const parent = el.closest('.arrival-item');
+                    if (parent) parent.classList.add('expired');
+                    if (metaEl) metaEl.textContent = '예정: ' + formatDateTime(target);
+                }} else {{
+                    const h = Math.floor(diff / 3600000);
+                    const m = Math.floor((diff % 3600000) / 60000);
+                    const s = Math.floor((diff % 60000) / 1000);
+                    el.textContent = (h > 0 ? h + '시간 ' : '') + m + '분 ' + s + '초';
+                    el.className = 'countdown' + (h < 1 ? ' warn' : '');
+                    const parent = el.closest('.arrival-item');
+                    if (parent) parent.classList.remove('expired');
+                    if (metaEl) metaEl.textContent = '예정: ' + formatDateTime(target);
+                }}
+            }});
         }}
-        function dragEnd() {{
-            if(activeNote) {{
-                const id = activeNote.id.replace('note_','');
-                fetch('/api/dashboard/move', {{
-                    method:'POST',
-                    headers:{{'Content-Type':'application/json'}},
-                    body: JSON.stringify({{id:id, x:parseInt(activeNote.style.left)||0, y:parseInt(activeNote.style.top)||0, w:activeNote.offsetWidth, h:activeNote.offsetHeight}})
-                }});
-            }};
-            activeNote = null; document.onmousemove = null; document.onmouseup = null;
+
+        function formatDateTime(d) {{
+            return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' +
+                String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
         }}
-        const ro = new ResizeObserver(entries => {{
-            for (let entry of entries) {{
-                const id = entry.target.id.replace('note_','');
-                if(!id || activeNote) continue;
-                fetch('/api/dashboard/move', {{
-                    method:'POST', headers:{{'Content-Type':'application/json'}},
-                    body: JSON.stringify({{id:id, x:parseInt(entry.target.style.left)||0, y:parseInt(entry.target.style.top)||0, w:entry.target.offsetWidth, h:entry.target.offsetHeight}})
-                }});
-            }}
-        }});
-        document.querySelectorAll('.sticky-note').forEach(n => ro.observe(n));
+
+        setInterval(function() {{ updateAllCountdowns(); reorderArrivalList(); }}, 1000);
+
+        function addArrivalItem() {{
+            const targetTime = document.getElementById('arrivalTargetTime').value;
+            const content = document.getElementById('arrivalContent').value.trim();
+            fetch('/api/arrival/add', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ target_time: targetTime || null, content: content }})
+            }}).then(r => r.json()).then(res => {{
+                if (res.status === 'success') {{
+                    arrivalItems.push({{ id: res.id, target_time: targetTime || null, content: content, order_idx: arrivalItems.length }});
+                    document.getElementById('arrivalTargetTime').value = '';
+                    document.getElementById('arrivalContent').value = '';
+                    renderArrivalList();
+                }}
+            }});
+        }}
+
+        function saveArrivalContent(id, value) {{
+            const displayEl = document.getElementById('content-display-' + id);
+            const editEl = document.getElementById('content-edit-' + id);
+            if (displayEl) displayEl.style.display = 'block';
+            if (editEl) editEl.style.display = 'none';
+            fetch('/api/arrival/update', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ id: id, content: value }})
+            }}).then(r => r.json()).then(res => {{
+                if (res.status === 'success') {{
+                    const item = arrivalItems.find(i => i.id == id);
+                    if (item) item.content = value;
+                    if (displayEl) displayEl.textContent = value || '(내용 없음)';
+                }}
+            }});
+        }}
+
+        function deleteArrivalItem(id) {{
+            if (!confirm('이 항목을 삭제할까요?')) return;
+            fetch('/api/arrival/delete/' + id, {{ method: 'POST' }}).then(r => r.json()).then(res => {{
+                if (res.status === 'success') {{
+                    arrivalItems = arrivalItems.filter(i => i.id != id);
+                    renderArrivalList();
+                }}
+            }});
+        }}
+
+        renderArrivalList();
     </script>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
-@app.route('/api/dashboard/add', methods=['POST'])
+@app.route('/api/arrival/add', methods=['POST'])
 @login_required
-def ds_add():
+def arrival_add():
+    d = request.json or {}
+    target_time = d.get('target_time') or None
+    content = d.get('content') or ''
     conn = sqlite3.connect('ledger.db')
-    conn.execute(
-        "INSERT INTO dashboard_notes (content, pos_x, pos_y, width, height) VALUES (?, ?, ?, ?, ?)",
-        ('내용을 입력하세요', 100, 100, 220, 180)
-    )
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(MAX(order_idx), -1) + 1 FROM arrival_status")
+    next_idx = cursor.fetchone()[0]
+    cursor.execute("INSERT INTO arrival_status (target_time, content, order_idx) VALUES (?, ?, ?)", (target_time, content, next_idx))
+    rid = cursor.lastrowid
+    conn.commit(); conn.close()
+    return jsonify({"status": "success", "id": rid})
+
+@app.route('/api/arrival/update', methods=['POST'])
+@login_required
+def arrival_update():
+    d = request.json or {}
+    try:
+        nid = int(d.get('id', 0))
+        if nid <= 0:
+            return jsonify({"status": "error", "message": "invalid id"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"status": "error", "message": "invalid id"}), 400
+    content = d.get('content', '')
+    target_time = d.get('target_time')
+    conn = sqlite3.connect('ledger.db')
+    if target_time is not None:
+        conn.execute("UPDATE arrival_status SET content=?, target_time=? WHERE id=?", (content, target_time, nid))
+    else:
+        conn.execute("UPDATE arrival_status SET content=? WHERE id=?", (content, nid))
     conn.commit(); conn.close()
     return jsonify({"status": "success"})
 
-@app.route('/api/dashboard/update', methods=['POST'])
+@app.route('/api/arrival/delete/<int:id>', methods=['POST'])
 @login_required
-def ds_upd():
-    d = request.json or {}
-    content = d.get('content')
-    if content is None:
-        content = ''
-    nid = d.get('id')
-    if nid is None:
-        return jsonify({"status": "error", "message": "id required"}), 400
-    conn = sqlite3.connect('ledger.db'); conn.execute("UPDATE dashboard_notes SET content=? WHERE id=?", (content, nid)); conn.commit(); conn.close()
+def arrival_delete(id):
+    conn = sqlite3.connect('ledger.db'); conn.execute("DELETE FROM arrival_status WHERE id=?", (id,)); conn.commit(); conn.close()
     return jsonify({"status": "success"})
 
-@app.route('/api/dashboard/move', methods=['POST'])
-@login_required
-def ds_mov():
-    d = request.json or {}
-    nid = d.get('id')
-    if nid is None:
-        return jsonify({"status": "error", "message": "id required"}), 400
-    x = 0 if d.get('x') is None else int(d.get('x'))
-    y = 0 if d.get('y') is None else int(d.get('y'))
-    w = 220 if d.get('w') is None else int(d.get('w'))
-    h = 180 if d.get('h') is None else int(d.get('h'))
-    conn = sqlite3.connect('ledger.db'); conn.execute("UPDATE dashboard_notes SET pos_x=?, pos_y=?, width=?, height=? WHERE id=?", (x, y, w, h, nid)); conn.commit(); conn.close()
-    return jsonify({"status": "success"})
 @app.route('/manage_drivers', methods=['GET', 'POST'])
 @login_required 
 def manage_drivers():
     global drivers_db
+    err_msg = ""
     if request.method == 'POST' and 'file' in request.files:
         file = request.files['file']
         if file.filename != '':
-            # 엑셀/CSV 업로드 처리 로직 유지
-            df = pd.read_excel(file, engine='openpyxl') if file.filename.lower().endswith(('.xlsx', '.xls')) else pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
-            df = df.fillna('').astype(str)
-            conn = sqlite3.connect('ledger.db')
-            df.to_sql('drivers', conn, if_exists='replace', index=False)
-            conn.commit(); conn.close(); load_db_to_mem()
+            try:
+                if file.filename.lower().endswith(('.xlsx', '.xls')):
+                    df = pd.read_excel(file, engine='openpyxl')
+                else:
+                    df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
+                df = df.fillna('').astype(str)
+                conn = sqlite3.connect('ledger.db')
+                df.to_sql('drivers', conn, if_exists='replace', index=False)
+                conn.commit(); conn.close(); load_db_to_mem()
+            except Exception as e:
+                err_msg = f"<p style='color:red; margin-bottom:15px;'>업로드 오류: {str(e)}<br>엑셀(.xlsx, .xls) 또는 CSV 파일만 업로드 가능합니다.</p>"
     
     # 출력 컬럼 정의 (은행명, 예금주 포함)
     DISPLAY_DRIVER_COLS = ["기사명", "차량번호", "연락처", "은행명", "계좌번호", "예금주", "사업자번호", "사업자", "개인/고정", "메모"]
     rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in DISPLAY_DRIVER_COLS])}</tr>" for r in drivers_db])
     content = f"""<div class="section"><h2>🚚 기사 관리 (은행/계좌 정보)</h2>
+    {err_msg}
     <form method="post" enctype="multipart/form-data" style="margin-bottom:15px;">
         <input type="file" name="file"> <button type="submit" class="btn-save">엑셀 업로드</button>
     </form>
     <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
-@app.route('/api/dashboard/delete/<int:id>', methods=['POST'])
-@login_required
-def ds_del(id):
-    conn = sqlite3.connect('ledger.db'); conn.execute("DELETE FROM dashboard_notes WHERE id=?", (id,)); conn.commit(); conn.close()
-    return jsonify({"status": "success"})
-
-@app.route('/api/dashboard/delete_all', methods=['POST'])
-@login_required
-def ds_del_all():
-    conn = sqlite3.connect('ledger.db'); conn.execute("DELETE FROM dashboard_notes"); conn.commit(); conn.close()
-    return jsonify({"status": "success"})
-
-# 배포 시 FLASK_DEBUG=0 또는 미설정으로 두고, FLASK_SECRET_KEY·ADMIN_PW 반드시 설정
+# 배포 시 FLASK_DEBUG=0 또는 미설정, FLASK_SECRET_KEY·ADMIN_PW 반드시 설정
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    debug_mode = os.environ.get('FLASK_DEBUG', '0').strip().lower() in ('1', 'true', 'yes')
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    app.run(debug=True, port=5000) # debug=True가 자동 반영의 핵심!
