@@ -22,6 +22,10 @@ def now_kst():
     """현재 한국시간 반환"""
     return datetime.now(KST)
 
+def calc_fee_total(r):
+    """업체운임 표시값: 수수료 + 선착불 + 업체운임"""
+    return float(r.get('fee') or 0) + float(r.get('comm') or 0) + float(r.get('pre_post') or 0)
+
 def safe_int(val, default=1):
     """사용자 입력을 안전하게 정수로 변환 (잘못된 입력 시 default 반환)"""
     try:
@@ -499,16 +503,12 @@ function loadLedgerList() {
             </td>
             ${columnKeys.map(key => {
                 let val = item[key] || '';
-                // 업체운임: 수수료·선착불에 금액이 있으면 합산 표기, 없으면 업체운임만
+                // 업체운임: 항상 (수수료+선착불+업체운임) 합산 표기
                 if(key === 'fee') {
                     let feeNum = parseFloat(item.fee) || 0;
                     let commNum = parseFloat(item.comm) || 0;
                     let preNum = parseFloat(item.pre_post) || 0;
-                    if (commNum || preNum) {
-                        val = (feeNum + commNum + preNum).toLocaleString();
-                    } else {
-                        val = val ? (isNaN(parseFloat(val)) ? val : parseFloat(val).toLocaleString()) : '';
-                    }
+                    val = (feeNum + commNum + preNum).toLocaleString();
                 }
                 // 기사운임은 합산 없이 그대로 표기
                 if(key === 'tax_img' || key === 'ship_img') {
@@ -902,12 +902,13 @@ def settlement():
             links_html += '</div>'
             return links_html
 
+        fee_display = int(calc_fee_total(row))
         table_rows += f"""<tr>
             <td style="white-space:nowrap;">
                 <a href="/?edit_id={row['id']}" class="btn-edit" style="display:inline-block; margin-right:4px; text-decoration:none;">장부입력</a>
                 <button class="btn-log" onclick="viewOrderLog({row['id']})" style="background:#6c757d; color:white; border:none; padding:2px 5px; cursor:pointer; font-size:11px; border-radius:3px;">로그</button>
             </td>
-            <td>{row['client_name']}</td><td>{tax_issued_btn}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{row['fee']}</td><td>{misu_btn}</td><td>{row['fee_out']}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td></tr>"""
+            <td>{row['client_name']}</td><td>{tax_issued_btn}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{misu_btn}</td><td>{row['fee_out']}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td></tr>"""
     
     pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&start={q_start}&end={q_end}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
 
@@ -999,7 +1000,7 @@ def statistics():
     full_settlement_client = ""; full_settlement_driver = ""
 
     if not df.empty:
-        df['fee'] = pd.to_numeric(df['fee'], errors='coerce').fillna(0)
+        df['fee'] = df.apply(lambda r: calc_fee_total(r), axis=1)
         df['fee_out'] = pd.to_numeric(df['fee_out'], errors='coerce').fillna(0)
         
         # 월별 요약 테이블
@@ -1191,6 +1192,8 @@ def export_custom_settlement():
     if df.empty: return "데이터가 없습니다."
     group_col = 'client_name' if t == 'client' else 'd_name'
     amt_col = 'fee' if t == 'client' else 'fee_out'
+    if t == 'client':
+        df['fee'] = df.apply(lambda r: calc_fee_total(r), axis=1)
     df[amt_col] = pd.to_numeric(df[amt_col], errors='coerce').fillna(0)
     excel_list = []
     for name, group in df.groupby(group_col):
@@ -1222,7 +1225,7 @@ def export_misu_info():
         elif not q_st and not in_dt: pass
         else: continue
         if q_name and q_name not in str(row_dict['client_name']): continue
-        export_data.append({'거래처명': row_dict['client_name'], '사업자번호': row_dict['biz_num'], '대표자': row_dict['biz_owner'], '메일': row_dict['mail'], '연락처': row_dict['c_phone'], '노선': row_dict['route'], '업체운임': row_dict['fee'], '오더일': row_dict['order_dt'], '결제예정일': row_dict['pay_due_dt']})
+        export_data.append({'거래처명': row_dict['client_name'], '사업자번호': row_dict['biz_num'], '대표자': row_dict['biz_owner'], '메일': row_dict['mail'], '연락처': row_dict['c_phone'], '노선': row_dict['route'], '업체운임': int(calc_fee_total(row_dict)), '오더일': row_dict['order_dt'], '결제예정일': row_dict['pay_due_dt']})
     df = pd.DataFrame(export_data)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w: df.to_excel(w, index=False)
@@ -1265,7 +1268,7 @@ def export_tax_not_issued():
             '오더일': order_dt,
             '노선': r.get('route', ''),
             '업체명': cname or r.get('client_name', ''),
-            '업체운임': r.get('fee', ''),
+            '업체운임': int(calc_fee_total(r)),
         })
     # 정렬: 업체명 → 오더일 → 노선 → 업체운임
     df = pd.DataFrame(export_data)
@@ -1391,7 +1394,7 @@ def export_stats():
 
         export_data.append({
             '오더일': r['order_dt'], '업체명': r['client_name'], '노선': r['route'],
-            '기사명': r['d_name'], '업체운임': r['fee'], '수금상태': m_st,
+            '기사명': r['d_name'], '업체운임': int(calc_fee_total(r)), '수금상태': m_st,
             '기사운임': r['fee_out'], '지급상태': p_st, '기사구분': d_type
         })
         
@@ -1494,7 +1497,7 @@ def save_ledger_api():
                        [data.get(k, '') for k in keys])
         target_id = cursor.lastrowid
 
-    details = f"업체:{data.get('client_name')}, 노선:{data.get('route')}, 업체운임:{data.get('fee')}, 기사운임:{data.get('fee_out')}"
+    details = f"업체:{data.get('client_name')}, 노선:{data.get('route')}, 업체운임:{int(calc_fee_total(data))}, 기사운임:{data.get('fee_out')}"
     cursor.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)",
                    (action_type, target_id, details))
 
@@ -1629,14 +1632,15 @@ def export_clients():
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     # 업체명별 최신 오더 1건 (오더일, 노선, 업체운임)
     ledger_rows = conn.execute(
-        "SELECT client_name, order_dt, route, fee FROM ledger WHERE client_name IS NOT NULL AND client_name != '' ORDER BY id DESC"
+        "SELECT client_name, order_dt, route, fee, comm, pre_post FROM ledger WHERE client_name IS NOT NULL AND client_name != '' ORDER BY id DESC"
     ).fetchall()
     conn.close()
     latest_order = {}
     for r in ledger_rows:
         cname = (r[0] or '').strip()
         if cname and cname not in latest_order:
-            latest_order[cname] = {'오더일': r[1] or '', '노선': r[2] or '', '업체운임': r[3] or ''}
+            fee_total = int(calc_fee_total({'fee': r[3], 'comm': r[4], 'pre_post': r[5]}))
+            latest_order[cname] = {'오더일': r[1] or '', '노선': r[2] or '', '업체운임': fee_total}
     # 컬럼 순서: 비고, 사업자구분, 결제특이사항, 발행구분, 사업자등록번호, 대표자명, 사업자주소, 업태, 종목, 메일주소, 오더일, 노선, 업체운임
     export_cols = ['비고', '사업자구분', '결제특이사항', '발행구분', '사업자등록번호', '대표자명', '사업자주소', '업태', '종목', '메일주소', '오더일', '노선', '업체운임']
     export_data = []
