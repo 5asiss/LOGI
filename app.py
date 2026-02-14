@@ -1687,12 +1687,31 @@ def manage_clients():
                 df.to_sql('clients', conn, if_exists='replace', index=False)
                 conn.commit(); conn.close(); load_db_to_mem()
             except Exception as e: return f"업로드 오류: {str(e)}"
-    rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])}</tr>" for r in clients_db])
+    rows_html = "".join([f"<tr class=\"filter-row\" data-search=\"{' '.join([str(r.get(c, '')).lower() for c in CLIENT_COLS])}\">{''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])}</tr>" for r in clients_db])
     content = f"""<div class="section"><h2>업체 관리</h2>
     <div style="margin-bottom:15px;">
         <form method="post" enctype="multipart/form-data" style="display:inline;"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form>
     </div>
-    <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
+    <div style="margin-bottom:12px;">
+        <input type="text" id="clientFilter" placeholder="업체명, 사업자번호, 대표자명 등 검색..." style="width:280px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" oninput="filterTable('clientFilter', 'clientTableBody')">
+        <span id="clientFilterCount" style="font-size:12px; color:#64748b; margin-left:8px;"></span>
+    </div>
+    <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody id="clientTableBody">{rows_html}</tbody></table></div>
+    <script>
+    function filterTable(inputId, tbodyId) {{
+        const q = document.getElementById(inputId).value.trim().toLowerCase();
+        const rows = document.querySelectorAll('#' + tbodyId + ' tr.filter-row');
+        let visible = 0;
+        rows.forEach(r => {{
+            const show = !q || (r.getAttribute('data-search') || '').includes(q);
+            r.style.display = show ? '' : 'none';
+            if (show) visible++;
+        }});
+        const countEl = document.getElementById(inputId.replace('Filter','FilterCount'));
+        if (countEl) countEl.textContent = visible + ' / ' + rows.length + '건';
+    }}
+    document.getElementById('clientFilter') && filterTable('clientFilter', 'clientTableBody');
+    </script></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 # --- [도착현황 라우트 및 API] ---
 @app.route('/arrival')
@@ -2137,13 +2156,32 @@ def manage_drivers():
     
     # 출력 컬럼 정의 (은행명, 예금주 포함)
     DISPLAY_DRIVER_COLS = ["기사명", "차량번호", "연락처", "은행명", "계좌번호", "예금주", "사업자번호", "사업자", "개인/고정", "메모"]
-    rows_html = "".join([f"<tr>{''.join([f'<td>{r.get(c, "")}</td>' for c in DISPLAY_DRIVER_COLS])}</tr>" for r in drivers_db])
+    rows_html = "".join([f"<tr class=\"filter-row\" data-search=\"{' '.join([str(r.get(c, '')).lower() for c in DISPLAY_DRIVER_COLS])}\">{''.join([f'<td>{r.get(c, "")}</td>' for c in DISPLAY_DRIVER_COLS])}</tr>" for r in drivers_db])
     content = f"""<div class="section"><h2>🚚 기사 관리 (은행/계좌 정보)</h2>
     {err_msg}
     <form method="post" enctype="multipart/form-data" style="margin-bottom:15px;">
         <input type="file" name="file"> <button type="submit" class="btn-save">엑셀 업로드</button>
     </form>
-    <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody>{rows_html}</tbody></table></div></div>"""
+    <div style="margin-bottom:12px;">
+        <input type="text" id="driverFilter" placeholder="기사명, 차량번호, 연락처 등 검색..." style="width:280px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" oninput="filterTable('driverFilter', 'driverTableBody')">
+        <span id="driverFilterCount" style="font-size:12px; color:#64748b; margin-left:8px;"></span>
+    </div>
+    <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody id="driverTableBody">{rows_html}</tbody></table></div>
+    <script>
+    function filterTable(inputId, tbodyId) {{
+        const q = document.getElementById(inputId).value.trim().toLowerCase();
+        const rows = document.querySelectorAll('#' + tbodyId + ' tr.filter-row');
+        let visible = 0;
+        rows.forEach(r => {{
+            const show = !q || (r.getAttribute('data-search') || '').includes(q);
+            r.style.display = show ? '' : 'none';
+            if (show) visible++;
+        }});
+        const countEl = document.getElementById(inputId.replace('Filter','FilterCount'));
+        if (countEl) countEl.textContent = visible + ' / ' + rows.length + '건';
+    }}
+    document.getElementById('driverFilter') && filterTable('driverFilter', 'driverTableBody');
+    </script></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
 # 배포 시 FLASK_DEBUG=0 또는 미설정, FLASK_SECRET_KEY·ADMIN_PW 반드시 설정
