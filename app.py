@@ -24,32 +24,38 @@ def now_kst():
     """현재 한국시간 반환"""
     return datetime.now(KST)
 
-def calc_fee_total(r):
-    """업체운임 표시값: 수수료 + 선착불 + 업체운임"""
+def calc_supply_value(r):
+    """공급가액 = 수수료 + 선착불 + 업체운임"""
     return float(r.get('fee') or 0) + float(r.get('comm') or 0) + float(r.get('pre_post') or 0)
 
+def calc_fee_total(r):
+    """공급가액 (하위호환용, calc_supply_value와 동일)"""
+    return calc_supply_value(r)
+
 def calc_totals_with_vat(r):
-    """업체/기사 운임·부가세·합계 반환. (fee, vat1, total1, fee_out, vat2, total2)"""
-    fee = int(calc_fee_total(r))
+    """업체/기사 운임·부가세·합계 반환. (supply_val, vat1, total1, fee_out, vat2, total2)"""
+    supply_val = int(calc_supply_value(r))
     is_cash_client = (str(r.get('pay_method_client') or '').strip() == '현금')
-    vat1 = 0 if is_cash_client else int(round(fee * 0.1))
-    total1 = fee + vat1
+    vat1 = 0 if is_cash_client else int(round(supply_val * 0.1))
+    total1 = supply_val + vat1
     fee_out = int(float(r.get('fee_out') or 0))
     is_cash_driver = (str(r.get('pay_method_driver') or '').strip() == '현금')
     vat2 = 0 if is_cash_driver else int(round(fee_out * 0.1))
     total2 = fee_out + vat2
-    return fee, vat1, total1, fee_out, vat2, total2
+    return supply_val, vat1, total1, fee_out, vat2, total2
 
 def calc_vat_auto(data):
-    """부가세·합계 자동계산. 업체운임=수수료+선착불+업체운임. 현금건이면 부가세=0"""
+    """부가세·합계 자동계산. 공급가액=수수료+선착불+업체운임, 부가세=공급가액*0.1, 합계=공급가액+부가세. 현금건이면 부가세=0"""
     def _f(k): return float(data.get(k) or 0)
-    # 업체운임 = 수수료+선착불+업체운임
-    fee_total = calc_fee_total(data)
+    supply_val = calc_supply_value(data)
     is_cash_client = (str(data.get('pay_method_client') or '').strip() == '현금')
-    if fee_total != 0:
-        v1 = 0 if is_cash_client else int(round(fee_total * 0.1))
+    data['sup_val'] = str(int(supply_val)) if supply_val != 0 else ''
+    if supply_val != 0:
+        v1 = 0 if is_cash_client else int(round(supply_val * 0.1))
         data['vat1'] = str(v1)
-        data['total1'] = str(int(fee_total) + v1)
+        data['total1'] = str(int(supply_val) + v1)
+    else:
+        data['vat1'] = ''; data['total1'] = ''
     # 기사: 기사운임 → 부가세, 합계 (현금이면 부가세=0)
     is_cash_driver = (str(data.get('pay_method_driver') or '').strip() == '현금')
     fo = _f('fee_out')
@@ -181,7 +187,10 @@ FULL_COLUMNS = [
     {"n": "운송장사진", "k": "ship_img", "t": "text"},
     {"n": "기사은행명", "k": "d_bank_name"}, 
     {"n": "기사예금주", "k": "d_bank_owner"},
-    {"n": "운송우편확인", "k": "is_mail_done", "t": "text"}
+    {"n": "운송우편확인", "k": "is_mail_done", "t": "text"},
+    {"n": "우편확인일", "k": "mail_dt", "t": "date"},
+    {"n": "업체 월말합산", "k": "month_end_client", "t": "checkbox"},
+    {"n": "기사 월말합산", "k": "month_end_driver", "t": "checkbox"}
 ]
 
 DRIVER_COLS = ["기사명", "차량번호", "연락처", "계좌번호", "사업자번호", "사업자", "개인/고정", "메모"]
@@ -190,8 +199,8 @@ CLIENT_COLS = ["사업자구분", "업체명", "발행구분", "사업자등록�
 COL_KEYS_DRIVER = {'d_name', 'c_num', 'search_num', 'd_phone', 'memo2', 'bank_acc', 'tax_phone', 'tax_contact', 'tax_biz_num', 'tax_biz_name', 'out_dt', 'pay_method_driver', 'fee_out', 'vat2', 'total2', 'write_dt', 'issue_dt', 'tax_chk', 'tax_biz2', 'tax_img', 'ship_img', 'd_bank_name', 'd_bank_owner'}
 # 통합장부 - 업체 관련 컬럼 (파랑 배경)
 COL_KEYS_CLIENT = {'pay_to', 'client_name', 'c_mgr_phone', 'c_mgr_name', 'c_phone', 'biz_num', 'biz_addr', 'biz_type1', 'biz_type2', 'mail', 'domain', 'biz_owner', 'pay_memo', 'pay_due_dt', 'in_dt', 'pay_method_client', 'comm', 'pre_post', 'fee', 'sup_val', 'vat1', 'total1', 'in_name', 'month_val', 'tax_dt', 'tax_biz'}
-# 부가세·합계 자동계산 필드 (입력 불가)
-CALC_READONLY_KEYS = {'vat1', 'total1', 'vat2', 'total2', 'net_profit', 'vat_final'}
+# 공급가액·부가세·합계 자동계산 필드 (입력 불가)
+CALC_READONLY_KEYS = {'sup_val', 'vat1', 'total1', 'vat2', 'total2', 'net_profit', 'vat_final'}
 # 순수입·부가세: 사용 안 함, 회색 처리
 UNUSED_GRAY_KEYS = {'net_profit', 'vat_final'}
 
@@ -312,8 +321,20 @@ BASE_HTML = """
         .section h3 { font-size: 15px; margin: 0 0 12px 0; color: #2c3e50; }
         .scroll-x { overflow-x: auto; max-width: 100%; border: 1px solid #d0d7de; background: white; border-radius: 6px; }
         .scroll-x table { width: max-content; min-width: 100%; }
-        .scroll-top { overflow-x: auto; overflow-y: hidden; max-height: 14px; margin-bottom: 4px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }
+        .scroll-top { overflow-x: auto; overflow-y: hidden; max-height: 14px; margin-bottom: 4px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; box-sizing: border-box; }
         .scroll-top table { width: max-content; min-width: 100%; visibility: hidden; }
+        .container { overflow: visible; }
+        .section { overflow: visible; }
+        .scroll-sticky-wrap { position: sticky; top: 0; left: 0; right: 0; z-index: 10; background: #eef1f6; padding-bottom: 6px; margin-bottom: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); border-radius: 6px; }
+        .scroll-sticky-wrap .scroll-top { margin-bottom: 4px; border-radius: 6px 6px 0 0; }
+        .scroll-sticky-wrap .scroll-x { border-radius: 6px; }
+        /* 통합장부: 화면 내릴 때 스크롤 영역이 상단에 붙어서 따라오도록 sticky 유지 */
+        .scroll-x-ledger { scroll-behavior: smooth; -webkit-overflow-scrolling: touch; }
+        /* 통합장부·정산관리: 가로 스크롤바 화면 하단 고정 (항상 보이게) */
+        .page-ledger { padding-bottom: 36px; }
+        .page-settlement { padding-bottom: 36px; }
+        .ledger-scrollbar-fix { position: fixed; bottom: 0; left: 0; right: 0; height: 28px; background: #f0f3f7; border-top: 2px solid #1a2a6c; z-index: 1000; overflow-x: auto; overflow-y: hidden; display: flex; align-items: center; }
+        .ledger-scrollbar-fix-inner { height: 1px; min-width: 100%; flex-shrink: 0; }
         table { border-collapse: collapse; width: 100%; white-space: nowrap; font-size: 12px; }
         th, td { border: 1px solid #dee2e6; padding: 6px 8px; text-align: center; }
         th { background: #f0f3f7; position: sticky; top: 0; z-index: 5; font-weight: 600; color: #374151; }
@@ -391,6 +412,16 @@ BASE_HTML = """
         .note-header { background: #fbc02d; padding: 6px; cursor: move; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 12px; }
         .note-content { flex-grow: 1; border: none; background: transparent; padding: 10px; font-family: inherit; font-size: 13px; resize: none; width: 100%; height: 100%; box-sizing: border-box; }
         .note-delete-btn { cursor: pointer; color: red; font-weight: bold; padding: 0 5px; user-select: none; }
+        .ctx-menu { display: none; position: fixed; z-index: 10000; background: white; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 120px; padding: 4px 0; }
+        .ctx-menu.show { display: block; }
+        .ctx-menu button { display: block; width: 100%; padding: 8px 16px; border: none; background: none; text-align: left; cursor: pointer; font-size: 13px; }
+        .ctx-menu button:hover { background: #f0f3f7; }
+        .ctx-menu button.del { color: #e74c3c; }
+        /* 통합장부 버튼 글씨 검정 */
+        .page-ledger .btn-edit,
+        .page-ledger .btn-status,
+        .page-ledger .btn-save,
+        .page-ledger .btn { color: #000 !important; }
     </style>
     </head>
 <body>
@@ -410,6 +441,10 @@ BASE_HTML = """
     <div class="container">{{ content_body | safe }}</div>
     <div id="search-popup" class="search-results"></div>
     <div id="imgModal" onclick="this.style.display='none'"><span class="close">&times;</span><img id="modalImg"></div>
+    <div id="ledgerCtxMenu" class="ctx-menu">
+        <button type="button" data-action="recall">재호출</button>
+        <button type="button" data-action="delete" class="del">삭제</button>
+    </div>
 
   <script>
     let drivers = {{ drivers_json | safe }};
@@ -522,13 +557,18 @@ BASE_HTML = """
             const form = document.getElementById('ledgerForm');
             if (!form) return;
             const get = (k) => parseFloat(form.elements[k]?.value || 0) || 0;
-            const feeTotal = get('comm') + get('pre_post') + get('fee');
+            const supplyVal = get('comm') + get('pre_post') + get('fee');
             const isCashClient = (form.elements['pay_method_client']?.value || '').trim() === '현금';
             const isCashDriver = (form.elements['pay_method_driver']?.value || '').trim() === '현금';
-            if (feeTotal !== 0) {
-                const v1 = isCashClient ? 0 : Math.round(feeTotal * 0.1);
+            const elSup = form.elements['sup_val'];
+            if (elSup) elSup.value = supplyVal !== 0 ? Math.floor(supplyVal) : '';
+            if (supplyVal !== 0) {
+                const v1 = isCashClient ? 0 : Math.round(supplyVal * 0.1);
                 const el1 = form.elements['vat1']; const el2 = form.elements['total1'];
-                if (el1) el1.value = v1; if (el2) el2.value = Math.floor(feeTotal) + v1;
+                if (el1) el1.value = v1; if (el2) el2.value = Math.floor(supplyVal) + v1;
+            } else {
+                const el1 = form.elements['vat1']; const el2 = form.elements['total1'];
+                if (el1) el1.value = ''; if (el2) el2.value = '';
             }
             const fo = get('fee_out');
             if (fo !== 0) {
@@ -582,8 +622,10 @@ BASE_HTML = """
             formData.forEach((v, k) => {
                 const key = isQuick ? k.replace('q_', '') : k;
                 const input = form.elements[k]; 
-                if (input && input.type === 'checkbox') data[key] = input.checked ? "✅" : "❌";
-                else data[key] = v;
+                if (input && input.type === 'checkbox') {
+                    if (key === 'month_end_client' || key === 'month_end_driver') data[key] = input.checked ? '1' : '';
+                    else data[key] = input.checked ? "✅" : "❌";
+                } else data[key] = v;
             });
             if(isQuick) {
                 const client = clients.find(c => c.업체명 === data.client_name);
@@ -635,13 +677,18 @@ function loadLedgerList() {
     const end = document.getElementById('endDate').value;
     
     // 날짜 쿼리 스트링 추가
-    fetch(`/api/get_ledger?page=${page}&start=${start}&end=${end}`)
+    const monthClient = document.getElementById('filterMonthEndClient') && document.getElementById('filterMonthEndClient').checked ? '1' : '';
+    const monthDriver = document.getElementById('filterMonthEndDriver') && document.getElementById('filterMonthEndDriver').checked ? '1' : '';
+    let url = `/api/get_ledger?page=${page}&start=${start}&end=${end}`;
+    if(monthClient) url += '&month_end_client=1';
+    if(monthDriver) url += '&month_end_driver=1';
+    fetch(url)
         .then(r => r.json())
         .then(res => {
             lastLedgerData = res.data;
             renderTableRows(res.data);
             if (typeof renderPagination === 'function') renderPagination(res.total_pages, res.current_page, 'ledger');
-            if (typeof window.matchLedgerScrollWidth === 'function') setTimeout(window.matchLedgerScrollWidth, 50);
+            if (typeof window.updateLedgerScrollBarWidth === 'function') setTimeout(window.updateLedgerScrollBarWidth, 100);
         });
 }
 
@@ -661,8 +708,8 @@ function loadLedgerList() {
                 if (['net_profit','vat_final'].includes(key)) tdCls = ' class="col-unused"';
                 else if (typeof columnKeysClient !== 'undefined' && columnKeysClient.has && columnKeysClient.has(key)) tdCls = ' class="col-client"';
                 else if (typeof columnKeysDriver !== 'undefined' && columnKeysDriver.has && columnKeysDriver.has(key)) tdCls = ' class="col-driver"';
-                // 업체운임: 항상 (수수료+선착불+업체운임) 합산 표기
-                if(key === 'fee') {
+                // 공급가액(sup_val): 수수료+선착불+업체운임 (API에서 calc_vat_auto 적용됨)
+                if(key === 'sup_val') {
                     let feeNum = parseFloat(item.fee) || 0;
                     let commNum = parseFloat(item.comm) || 0;
                     let preNum = parseFloat(item.pre_post) || 0;
@@ -680,23 +727,36 @@ function loadLedgerList() {
                     }
                     return `<td${tdCls}>${btns}</div></td>`;
                 }
-                if(['in_dt','tax_dt','out_dt'].includes(key)) {
-                    let label = key==='in_dt'?'입금일':key==='tax_dt'?'계산서발행일':'지급일';
+                if(['in_dt','tax_dt','out_dt','mail_dt','issue_dt'].includes(key)) {
+                    let label = key==='in_dt'?'입금일':key==='tax_dt'?'계산서발행일':key==='out_dt'?'지급일':key==='mail_dt'?'우편확인일':'기사계산서발행일';
                     let today = new Date().toISOString().slice(0,10);
-                    let displayVal = key==='tax_dt' ? (item.tax_chk==='발행완료' ? val : '') : val;
-                    let hasVal = !!displayVal;
+                    let displayVal = key==='tax_dt' ? (item.tax_chk==='발행완료' || val ? val : '') : val;
+                    let hasVal = !!displayVal || (key==='mail_dt' && item.is_mail_done==='확인완료');
                     let toggleVal = hasVal ? "''" : "'"+today+"'";
                     let btnHtml, onclickStr, btnLabel;
                     if(key==='tax_dt') {
                         let taxToggle = item.tax_chk==='발행완료' ? "''" : "'발행완료'";
                         onclickStr = `changeStatus(${item.id}, 'tax_chk', ${taxToggle})`;
-                        btnLabel = item.tax_chk||'미발행';
+                        btnLabel = (item.tax_chk==='발행완료' || val) ? '계산서 발행확인' : '미발행';
+                    } else if(key==='mail_dt') {
+                        onclickStr = `changeStatus(${item.id}, 'mail_dt', ${toggleVal})`;
+                        btnLabel = (item.is_mail_done==='확인완료' || val) ? '확인완료' : '미확인';
+                    } else if(key==='issue_dt') {
+                        onclickStr = `changeStatus(${item.id}, 'issue_dt', ${toggleVal})`;
+                        btnLabel = (displayVal || item.issue_dt) ? '확인완료' : '설정';
                     } else {
                         onclickStr = `changeStatus(${item.id}, '${key}', ${toggleVal})`;
-                        btnLabel = key==='in_dt' ? (hasVal?'수금완료':'설정') : (hasVal?'지급완료':'설정');
+                        btnLabel = key==='in_dt' ? (displayVal?'수금완료':'설정') : (displayVal?'지급완료':'설정');
                     }
+                    let inputHtml = `<input type="date" value="${val||''}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus(${item.id}, '${key}', this.value)">`;
                     btnHtml = `<button class="btn-status" style="font-size:10px; padding:3px 6px; ${hasVal?'bg-green':'bg-orange'}" onclick="${onclickStr}">${btnLabel}</button>`;
-                    return `<td${tdCls}><div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><span style="font-size:10px; color:#1976d2; font-weight:600;">${displayVal||''}</span>${btnHtml}<span style="font-size:9px; color:#888;">${label}</span></div></td>`;
+                    let taxBizSpan = (key==='tax_dt' && (item.tax_biz||'').trim()) ? `<span style="font-size:10px; color:#666;">${(item.tax_biz||'').trim()}</span>` : '';
+                    let taxBiz2Span = (key==='issue_dt' && (item.tax_biz2||'').trim()) ? `<span style="font-size:10px; color:#666;">${(item.tax_biz2||'').trim()}</span>` : '';
+                    return `<td${tdCls}><div style="display:flex; flex-direction:column; align-items:center; gap:2px;">${inputHtml}<span style="font-size:10px; color:#1976d2; font-weight:600;">${displayVal||''}</span>${btnHtml}${taxBizSpan}${taxBiz2Span}<span style="font-size:9px; color:#888;">${label}</span></div></td>`;
+                }
+                if(key === 'month_end_client' || key === 'month_end_driver') {
+                    let checked = (val === '1' || val === 'Y');
+                    return `<td${tdCls} style="text-align:center;"><input type="checkbox" ${checked ? 'checked' : ''} onchange="changeStatus(${item.id}, '${key}', this.checked ? '1' : ''); setTimeout(function(){ loadLedgerList(); }, 200);" title="${key==='month_end_client'?'업체 월말합산':'기사 월말합산'}"></td>`;
                 }
                 return `<td${tdCls}>${val}</td>`;
             }).join('')}
@@ -732,6 +792,52 @@ function loadLedgerList() {
                 if (afterElement == null) body.appendChild(dragging);
                 else body.insertBefore(dragging, afterElement);
             });
+            initLedgerContextMenu();
+        }
+        let ledgerCtxRowId = null;
+        function initLedgerContextMenu() {
+            const body = document.getElementById('ledgerBody');
+            const menu = document.getElementById('ledgerCtxMenu');
+            if(!body || !menu) return;
+            body.oncontextmenu = (e) => {
+                const tr = e.target.closest('tr.draggable');
+                if(!tr) return;
+                e.preventDefault();
+                ledgerCtxRowId = parseInt(tr.getAttribute('data-id'), 10);
+                if(isNaN(ledgerCtxRowId)) return;
+                var editBtn = tr.querySelector('.btn-edit');
+                if(editBtn) {
+                    var r = editBtn.getBoundingClientRect();
+                    menu.style.left = (r.right + 6) + 'px';
+                    menu.style.top = r.top + 'px';
+                } else {
+                    menu.style.left = e.clientX + 'px';
+                    menu.style.top = e.clientY + 'px';
+                }
+                menu.classList.add('show');
+            };
+            menu.querySelectorAll('button').forEach(btn => {
+                btn.onclick = () => {
+                    if(ledgerCtxRowId == null) return;
+                    const action = btn.getAttribute('data-action');
+                    menu.classList.remove('show');
+                    if(action === 'delete') {
+                        if(!confirm('이 오더를 삭제하시겠습니까?')) return;
+                        fetch('/api/delete_ledger/' + ledgerCtxRowId, { method: 'POST' })
+                            .then(r => r.json()).then(res => { if(res.status === 'success') loadLedgerList(); else alert(res.message || '삭제 실패'); })
+                            .catch(() => alert('삭제 중 오류가 발생했습니다.'));
+                    } else if(action === 'recall') {
+                        fetch('/api/recall_ledger/' + ledgerCtxRowId, { method: 'POST' })
+                            .then(r => r.json()).then(res => { if(res.status === 'success') loadLedgerList(); else alert(res.message || '재호출 실패'); })
+                            .catch(() => alert('재호출 중 오류가 발생했습니다.'));
+                    }
+                    ledgerCtxRowId = null;
+                };
+            });
+            if(!window._ledgerCtxClickBound) {
+                window._ledgerCtxClickBound = true;
+                document.addEventListener('click', () => { menu.classList.remove('show'); ledgerCtxRowId = null; });
+            }
         }
 
         function getDragAfterElement(container, y) {
@@ -759,7 +865,7 @@ function loadLedgerList() {
             columnKeys.forEach(key => {
                 const input = document.querySelector(`#ledgerForm [name="${key}"]`);
                 if (!input) return;
-                if (input.type === 'checkbox') { input.checked = (item[key] === "✅"); return; }
+                if (input.type === 'checkbox') { input.checked = (item[key] === "✅" || item[key] === "1" || item[key] === "Y"); return; }
                 let val = item[key] || '';
                 if (dtKeys.includes(key) && val && val.includes(' ')) val = val.replace(' ', 'T').slice(0, 16);
                 input.value = val;
@@ -833,8 +939,8 @@ function loadLedgerList() {
             }
         }
 
-        // 장부 입력·목록 가로 스크롤 동기화 (크기·움직임 동일)
-        const ledgerScrollEls = ['ledgerFormScrollTop', 'ledgerFormScroll', 'ledgerListScrollTop', 'ledgerListScroll'];
+        // 통합장부: 입력·목록·하단 고정 바 가로스크롤 동기화 (하단 바는 화면에 항상 고정)
+        const ledgerScrollEls = ['ledgerFormScroll', 'ledgerListScroll', 'ledgerScrollBarFix'];
         let ledgerScrollSyncing = false;
         function syncLedgerScroll(sourceEl) {
             if (ledgerScrollSyncing) return;
@@ -842,7 +948,7 @@ function loadLedgerList() {
             const left = sourceEl.scrollLeft;
             ledgerScrollEls.forEach(id => {
                 const el = document.getElementById(id);
-                if (el && el.scrollLeft !== left) el.scrollLeft = left;
+                if (el && el !== sourceEl && el.scrollLeft !== left) el.scrollLeft = left;
             });
             requestAnimationFrame(() => { ledgerScrollSyncing = false; });
         }
@@ -853,20 +959,21 @@ function loadLedgerList() {
                 el.addEventListener('scroll', () => syncLedgerScroll(el));
             });
         }
-        function matchLedgerScrollWidth() {
-            const main = document.getElementById('ledgerListScroll');
-            const top = document.getElementById('ledgerListScrollTop');
-            const formMain = document.getElementById('ledgerFormScroll');
-            const formTop = document.getElementById('ledgerFormScrollTop');
-            if (main && top) top.style.width = main.offsetWidth + 'px';
-            if (formMain && formTop) formTop.style.width = formMain.offsetWidth + 'px';
+        function updateLedgerScrollBarWidth() {
+            const inner = document.getElementById('ledgerScrollBarFixInner');
+            const formEl = document.getElementById('ledgerFormScroll');
+            const listEl = document.getElementById('ledgerListScroll');
+            if (!inner) return;
+            let w = 0;
+            if (formEl && formEl.scrollWidth > w) w = formEl.scrollWidth;
+            if (listEl && listEl.scrollWidth > w) w = listEl.scrollWidth;
+            inner.style.width = (w || 100) + 'px';
         }
         document.addEventListener('DOMContentLoaded', () => {
             bindLedgerScroll();
-            matchLedgerScrollWidth();
-            window.addEventListener('resize', matchLedgerScrollWidth);
-            window.matchLedgerScrollWidth = matchLedgerScrollWidth;
+            updateLedgerScrollBarWidth();
         });
+        window.updateLedgerScrollBarWidth = updateLedgerScrollBarWidth;
     </script>
 </body>
 </html>
@@ -927,6 +1034,7 @@ def index():
     col_keys_driver_json = json.dumps(list(COL_KEYS_DRIVER))
     col_keys_client_json = json.dumps(list(COL_KEYS_CLIENT))
     content = f"""
+    <div class="page-ledger">
         <div class="section" style="background:#fffbf0; border:2px solid #fbc02d;">
         <h3>⚡ 빠른 오더 입력 (초성 검색 가능)</h3>
         <p style="margin:0 0 10px 0; font-size:11px; color:#666;"><span style="background:#e3f2fd; padding:2px 6px; border-radius:3px;">파랑</span> = 업체 &nbsp; <span style="background:#ffebee; padding:2px 6px; border-radius:3px;">연한 빨강</span> = 기사</p>
@@ -946,8 +1054,8 @@ def index():
         <h3>1. 장부 상세 데이터 입력</h3>
         <p style="margin:0 0 10px 0; font-size:11px; color:#666;"><span style="background:#e3f2fd; padding:2px 6px; border-radius:3px;">파랑</span> = 업체 &nbsp; <span style="background:#ffebee; padding:2px 6px; border-radius:3px;">연한 빨강</span> = 기사</p>
         <form id="ledgerForm">
-            <div class="scroll-top" id="ledgerFormScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody><tr><td>-</td>{"".join([f"<td></td>" for c in FULL_COLUMNS])}</tr></tbody></table></div>
-            <div class="scroll-x" id="ledgerFormScroll">
+            <div class="scroll-sticky-wrap">
+            <div class="scroll-x scroll-x-ledger" id="ledgerFormScroll">
                 <table>
                     <thead>
                         <tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr>
@@ -960,6 +1068,7 @@ def index():
                         </tr>
                     </tbody>
                 </table>
+            </div>
             </div>
             <div style="text-align:right; margin-top:15px;"><button type="button" class="btn-save" onclick="saveLedger('ledgerForm')">상세 저장 및 추가 ↓</button></div>
         </form>
@@ -976,12 +1085,17 @@ def index():
             <button type="button" class="btn-status bg-blue" style="background:#ebf2ff; color:#1a2a6c; border:1px solid #1a2a6c;" onclick="setDateRange(30)">1달</button>
             <button type="button" class="btn" onclick="location.href='/'">전체보기</button>
         </div>
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
+            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="filterMonthEndClient" onchange="loadLedgerList()"> 업체 월말합산만</label>
+            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="filterMonthEndDriver" onchange="loadLedgerList()"> 기사 월말합산만</label>
+        </div>
         <input type="text" id="ledgerSearch" class="search-bar" placeholder="기사명, 업체명, 노선 등 검색..." onkeyup="filterLedger()">
-        <div class="scroll-top" id="ledgerListScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody><tr><td>-</td>{"".join([f"<td></td>" for c in FULL_COLUMNS])}</tr></tbody></table></div>
-        <div class="scroll-x" id="ledgerListScroll"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
+        <div class="scroll-sticky-wrap">
+        <div class="scroll-x scroll-x-ledger" id="ledgerListScroll"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
+        </div>
         <div id="ledgerPagination" class="pagination"></div>
     </div>
-    
+    <div id="ledgerScrollBarFix" class="ledger-scrollbar-fix"><div id="ledgerScrollBarFixInner" class="ledger-scrollbar-fix-inner"></div></div>
     <div id="logModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.6);">
         <div style="background:white; width:95%; max-width:1200px; margin:30px auto; padding:25px; border-radius:10px; box-shadow:0 5px 25px rgba(0,0,0,0.4);">
             <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:3px solid #1a2a6c; padding-bottom:12px; margin-bottom:15px;">
@@ -1004,6 +1118,7 @@ def index():
                 <button onclick="closeLogModal()" style="padding:8px 20px; background:#6c757d; color:white; border:none; border-radius:5px; cursor:pointer;">닫기</button>
             </div>
         </div>
+    </div>
     </div>
     """
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys=col_keys_json, col_keys_driver=col_keys_driver_json, col_keys_client=col_keys_client_json)
@@ -1106,24 +1221,40 @@ def settlement():
         in_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not row['in_dt'] else "''"
         out_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not row['out_dt'] else "''"
         tax_chk_toggle = "''" if row.get('tax_chk') == '발행완료' else "'발행완료'"
+        mail_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not row.get('mail_dt') else "''"
 
         in_dt_val = row.get('in_dt') or ''
         tax_dt_val = row.get('tax_dt') or ''
         out_dt_val = row.get('out_dt') or ''
+        mail_dt_val = row.get('mail_dt') or ''
         in_dt_span = f'<span style="font-size:10px; color:#1976d2;">{in_dt_val}</span>' if in_dt_val else ''
         tax_dt_span = f'<span style="font-size:10px; color:#1976d2;">{tax_dt_val}</span>' if tax_dt_val and row.get('tax_chk')=='발행완료' else ''
         out_dt_span = f'<span style="font-size:10px; color:#1976d2;">{out_dt_val}</span>' if out_dt_val else ''
-        misu_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;">{in_dt_span}<button class="btn-status {row["m_cl"]}" onclick="changeStatus({row["id"]}, \'in_dt\', {in_dt_toggle})">{row["m_st"]}</button></div>'
-        tax_label = row.get('tax_chk') or '미발행'
+        mail_dt_span = f'<span style="font-size:10px; color:#1976d2;">{mail_dt_val}</span>' if mail_dt_val else ''
+        tax_label = '계산서 발행확인' if (tax_dt_val or row.get('tax_chk')=='발행완료') else '미발행'
+        misu_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{in_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'in_dt\', this.value)">{in_dt_span}<button class="btn-status {row["m_cl"]}" onclick="changeStatus({row["id"]}, \'in_dt\', {in_dt_toggle})">{row["m_st"]}</button></div>'
         tax_issued_btn = f'<button class="btn-status {"bg-green" if row.get("tax_chk")=="발행완료" else "bg-orange"}" onclick="changeStatus({row["id"]}, \'tax_chk\', {tax_chk_toggle})">{tax_label}</button>'
-        biz_gubun = (client_by_name.get(str(row.get('client_name') or '').strip(), {}) or {}).get('사업자구분', '') or ''
-        biz_span = f'<span style="font-size:10px; color:#666;">{biz_gubun}</span>' if biz_gubun else ''
-        tax_cell = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;">{tax_dt_span}<div>{tax_issued_btn}</div>{biz_span}</div>'
-        pay_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;">{out_dt_span}<button class="btn-status {row["p_cl"]}" onclick="changeStatus({row["id"]}, \'out_dt\', {out_dt_toggle})">{row["p_st"]}</button></div>'
+        tax_biz_val = (row.get('tax_biz') or '').strip()
+        tax_biz_span = f'<span style="font-size:10px; color:#666;">{tax_biz_val}</span>' if tax_biz_val else ''
+        tax_cell = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{tax_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'tax_dt\', this.value)">{tax_dt_span}<div>{tax_issued_btn}</div>{tax_biz_span}</div>'
+        pay_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{out_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'out_dt\', this.value)">{out_dt_span}<button class="btn-status {row["p_cl"]}" onclick="changeStatus({row["id"]}, \'out_dt\', {out_dt_toggle})">{row["p_st"]}</button></div>'
         
         mail_val = row.get('is_mail_done', '미확인')
         mail_color = "bg-green" if mail_val == "확인완료" else "bg-orange"
-        mail_btn = f'<button class="btn-status {mail_color}" onclick="changeStatus({row["id"]}, \'is_mail_done\', \'확인완료\')">{mail_val if mail_val else "미확인"}</button>'
+        mail_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{mail_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'mail_dt\', this.value)">{mail_dt_span}<button class="btn-status {mail_color}" onclick="changeStatus({row["id"]}, \'mail_dt\', {mail_dt_toggle})">{mail_val if mail_val else "미확인"}</button></div>'
+
+        issue_dt_val = row.get('issue_dt') or ''
+        issue_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not issue_dt_val else "''"
+        issue_dt_span = f'<span style="font-size:10px; color:#1976d2;">{issue_dt_val}</span>' if issue_dt_val else ''
+        tax_biz2_val = (row.get('tax_biz2') or '').strip()
+        tax_biz2_span = f'<span style="font-size:10px; color:#666;">{tax_biz2_val}</span>' if tax_biz2_val else ''
+        issue_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{issue_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'issue_dt\', this.value)">{issue_dt_span}<button class="btn-status {"bg-green" if issue_dt_val else "bg-orange"}" onclick="changeStatus({row["id"]}, \'issue_dt\', {issue_dt_toggle})">{"확인완료" if issue_dt_val else "설정"}</button>{tax_biz2_span}</div>'
+
+        me_c = (str(row.get('month_end_client') or '').strip() in ('1', 'Y'))
+        me_d = (str(row.get('month_end_driver') or '').strip() in ('1', 'Y'))
+        rid = row['id']
+        month_end_client_cell = f'<td style="text-align:center;"><input type="checkbox" {"checked" if me_c else ""} onchange="fetch(\'/api/update_status\', {{method:\'POST\', headers:{{\'Content-Type\':\'application/json\'}}, body: JSON.stringify({{id:{rid}, key:\'month_end_client\', value: this.checked ? \'1\' : \'\'}})}}).then(r=>r.json()).then(res=>{{if(res.status===\'success\') location.reload(); else alert(res.message||\'반영 실패\');}});"></td>'
+        month_end_driver_cell = f'<td style="text-align:center;"><input type="checkbox" {"checked" if me_d else ""} onchange="fetch(\'/api/update_status\', {{method:\'POST\', headers:{{\'Content-Type\':\'application/json\'}}, body: JSON.stringify({{id:{rid}, key:\'month_end_driver\', value: this.checked ? \'1\' : \'\'}})}}).then(r=>r.json()).then(res=>{{if(res.status===\'success\') location.reload(); else alert(res.message||\'반영 실패\');}});"></td>'
 
         def make_direct_links(ledger_id, img_type, raw_paths):
             paths = [p.strip() for p in (raw_paths or "").split(',')] if raw_paths else []
@@ -1135,7 +1266,7 @@ def settlement():
             links_html += '</div>'
             return links_html
 
-        fee_display = int(calc_fee_total(row))
+        fee_display = int(calc_supply_value(row))
         is_cash_client = (str(row.get('pay_method_client') or '').strip() == '현금')
         is_cash_driver = (str(row.get('pay_method_driver') or '').strip() == '현금')
         vat1 = 0 if is_cash_client else int(round(fee_display * 0.1))
@@ -1148,11 +1279,11 @@ def settlement():
                 <a href="/?edit_id={row['id']}" class="btn-edit" style="display:inline-block; margin-right:4px; text-decoration:none;">장부입력</a>
                 <button class="btn-log" onclick="viewOrderLog({row['id']})" style="background:#6c757d; color:white; border:none; padding:2px 5px; cursor:pointer; font-size:11px; border-radius:3px;">로그</button>
             </td>
-            <td>{row['client_name']}</td><td>{tax_cell}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td></tr>"""
+            <td>{row['client_name']}</td><td>{tax_cell}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{issue_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td><td>{month_end_client_cell}</td><td>{month_end_driver_cell}</td></tr>"""
     
     pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&start={q_start}&end={q_end}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
 
-    content = f"""<div class="section"><h2>정산 관리 (기간 및 실시간 필터)</h2>
+    content = f"""<div class="section page-settlement"><h2>정산 관리 (기간 및 실시간 필터)</h2>
     <form class="filter-box" method="get" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
         <strong>📅 오더일:</strong>
         <input type="date" name="start" value="{q_start}"> ~ 
@@ -1176,9 +1307,13 @@ def settlement():
         <a href="/export_pay_info?status={q_status}&name={q_name}&start={q_start}&end={q_end}" class="btn-status bg-orange" style="text-decoration:none; margin-left:5px;">미지급 기사정보 엑셀</a>
         <a href="/export_tax_not_issued?status={q_status}&name={q_name}&start={q_start}&end={q_end}" class="btn-status bg-gray" style="text-decoration:none; margin-left:5px;">세금계산서 미발행 엑셀</a>
     </div>
-    <div class="scroll-x"><table><thead><tr><th>로그</th><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>업체운임</th><th>부가세</th><th>합계</th><th>수금상태</th><th>기사운임</th><th>부가세</th><th>합계</th><th>지급상태</th><th>우편확인</th><th>기사계산서</th><th>운송장</th></tr></thead><tbody>{table_rows}</tbody></table></div>
+    <div class="scroll-sticky-wrap">
+    <div class="scroll-top" id="settlementScrollTop"><table><thead><tr><th>로그</th><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>공급가액</th><th>부가세</th><th>합계</th><th>수금상태</th><th>기사운임</th><th>부가세</th><th>합계</th><th>지급상태</th><th>우편확인</th><th>기사계산서발행일</th><th>기사계산서</th><th>운송장</th><th>업체월말</th><th>기사월말</th></tr></thead><tbody><tr><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr></tbody></table></div>
+    <div class="scroll-x" id="settlementScroll"><table><thead><tr><th>로그</th><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>공급가액</th><th>부가세</th><th>합계</th><th>수금상태</th><th>기사운임</th><th>부가세</th><th>합계</th><th>지급상태</th><th>우편확인</th><th>기사계산서발행일</th><th>기사계산서</th><th>운송장</th><th>업체월말</th><th>기사월말</th></tr></thead><tbody>{table_rows}</tbody></table></div>
+    <div class="scroll-top" id="settlementScrollBottom" style="margin-top:4px;"><table><thead><tr><th>로그</th><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>공급가액</th><th>부가세</th><th>합계</th><th>수금상태</th><th>기사운임</th><th>부가세</th><th>합계</th><th>지급상태</th><th>우편확인</th><th>기사계산서발행일</th><th>기사계산서</th><th>운송장</th><th>업체월말</th><th>기사월말</th></tr></thead><tbody><tr><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr></tbody></table></div>
+    </div>
     <div class="pagination">{pagination_html}</div></div>
-
+    <div id="settlementScrollBarFix" class="ledger-scrollbar-fix"><div id="settlementScrollBarFixInner" class="ledger-scrollbar-fix-inner"></div></div>
     <div id="logModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.6);">
         <div style="background:white; width:90%; max-width:800px; margin:50px auto; padding:20px; border-radius:10px; box-shadow:0 5px 15px rgba(0,0,0,0.3);">
             <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #1a2a6c; padding-bottom:10px; margin-bottom:15px;">
@@ -1189,6 +1324,55 @@ def settlement():
             <div style="text-align:right; margin-top:15px;"><button onclick="closeLogModal()" style="padding:8px 20px; background:#6c757d; color:white; border:none; border-radius:5px; cursor:pointer;">닫기</button></div>
         </div>
     </div>
+    <script>
+    (function() {{
+        const topEl = document.getElementById('settlementScrollTop');
+        const mainEl = document.getElementById('settlementScroll');
+        const botEl = document.getElementById('settlementScrollBottom');
+        const barEl = document.getElementById('settlementScrollBarFix');
+        const barInner = document.getElementById('settlementScrollBarFixInner');
+        if (!topEl || !mainEl) return;
+        function matchWidth() {{
+            const mainTbl = mainEl.querySelector('table');
+            const topTbl = topEl.querySelector('table');
+            const botTbl = botEl ? botEl.querySelector('table') : null;
+            if (mainTbl && topTbl) {{
+                const mainRow = mainTbl.querySelector('thead tr') || mainTbl.querySelector('tr');
+                const topRow = topTbl.querySelector('tr');
+                const botRow = botTbl ? botTbl.querySelector('tr') : null;
+                if (mainRow && topRow && mainRow.cells.length === topRow.cells.length) {{
+                    for (let i = 0; i < mainRow.cells.length; i++) {{
+                        const w = mainRow.cells[i].offsetWidth;
+                        topRow.cells[i].style.width = w + 'px';
+                        topRow.cells[i].style.minWidth = w + 'px';
+                        if (botRow && botRow.cells[i]) {{ botRow.cells[i].style.width = w + 'px'; botRow.cells[i].style.minWidth = w + 'px'; }}
+                    }}
+                }}
+            }}
+            const w = mainEl.clientWidth;
+            topEl.style.width = w + 'px';
+            if (botEl) botEl.style.width = w + 'px';
+            if (barInner) barInner.style.width = (mainEl.scrollWidth || 100) + 'px';
+        }}
+        let syncing = false;
+        function sync(src) {{
+            if (syncing) return;
+            syncing = true;
+            const left = src.scrollLeft;
+            if (topEl.scrollLeft !== left) topEl.scrollLeft = left;
+            if (mainEl.scrollLeft !== left) mainEl.scrollLeft = left;
+            if (botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left;
+            if (barEl && barEl.scrollLeft !== left) barEl.scrollLeft = left;
+            requestAnimationFrame(() => {{ syncing = false; }});
+        }}
+        topEl.addEventListener('scroll', () => sync(topEl));
+        mainEl.addEventListener('scroll', () => sync(mainEl));
+        if (botEl) botEl.addEventListener('scroll', () => sync(botEl));
+        if (barEl) barEl.addEventListener('scroll', () => sync(barEl));
+        setTimeout(matchWidth, 80);
+        window.addEventListener('resize', matchWidth);
+    }})();
+    </script>
     """
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 @app.route('/statistics')
@@ -1201,6 +1385,8 @@ def statistics():
     q_client = request.args.get('client', '').strip()
     q_driver = request.args.get('driver', '').strip()
     q_status = request.args.get('status', '')
+    q_month_client = request.args.get('month_end_client', '')
+    q_month_driver = request.args.get('month_end_driver', '')
     
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     filtered_rows = []
@@ -1216,6 +1402,8 @@ def statistics():
         if q_start and q_end and not (q_start <= order_dt <= q_end): continue
         if q_client and q_client not in str(r.get('client_name', '')): continue
         if q_driver and q_driver not in str(r.get('d_name', '')): continue
+        if q_month_client and (str(r.get('month_end_client') or '').strip() not in ('1', 'Y')): continue
+        if q_month_driver and (str(r.get('month_end_driver') or '').strip() not in ('1', 'Y')): continue
 
         # 정산 상태 판별 로직 복구
         in_dt = r.get('in_dt'); out_dt = r.get('out_dt')
@@ -1241,6 +1429,8 @@ def statistics():
     q_client_enc = quote(q_client, safe='') if q_client else ''
     q_driver_enc = quote(q_driver, safe='') if q_driver else ''
     q_status_enc = quote(q_status, safe='') if q_status else ''
+    q_month_client_enc = '&month_end_client=1' if q_month_client else ''
+    q_month_driver_enc = '&month_end_driver=1' if q_month_driver else ''
 
     if not df.empty:
         df['fee'] = df.apply(lambda r: calc_fee_total(r), axis=1)
@@ -1261,7 +1451,7 @@ def statistics():
         for date, v in d_grp.iterrows():
             summary_daily += f"<tr><td>{date}</td><td>{int(v['id'])}</td><td>{int(v['fee']):,}</td><td>{int(v['vat1']):,}</td><td>{int(v['total1']):,}</td><td>{int(v['fee_out']):,}</td><td>{int(v['vat2']):,}</td><td>{int(v['total2']):,}</td></tr>"
 
-        # 업체 정산 데이터 조립: 업체별 "수신 [업체명] 정산서" 형식, 오더일|노선|업체운임|부가세|합계|미수 (최근일 아래로)
+        # 업체 정산 데이터 조립: 업체별 "수신 [업체명] 정산서" 형식, 오더일|노선|공급가액|부가세|합계 (미수란 미표기, 오더일 오름차순)
         for client_name, grp in df.sort_values(by=['client_name', 'order_dt'], ascending=[True, True]).groupby('client_name'):
             cname = str(client_name or '').strip() or '(업체명 없음)'
             cname_attr = cname.replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
@@ -1272,33 +1462,31 @@ def statistics():
             full_settlement_client += f"""
             <div class="client-settle-card" data-client="{cname_attr}">
                 <div class="client-settle-title">수신 「{cname_display}」 정산서</div>
-                <table class="client-settle-table"><thead><tr><th>오더일</th><th>노선</th><th>업체운임</th><th>부가세</th><th>합계</th><th>미수</th></tr></thead><tbody>"""
+                <table class="client-settle-table"><thead><tr><th>오더일</th><th>노선</th><th>공급가액</th><th>부가세</th><th>합계</th></tr></thead><tbody>"""
             for _, r in grp.iterrows():
                 fee_val = int(r['fee'])
                 vat_val = int(r['vat1'])
                 total_val = int(r['total1'])
-                full_settlement_client += f"<tr><td>{r['order_dt']}</td><td>{r.get('route','')}</td><td style='text-align:right;'>{fee_val:,}</td><td style='text-align:right;'>{vat_val:,}</td><td style='text-align:right;'>{total_val:,}</td><td>{r['m_st']}</td></tr>"
-            full_settlement_client += f"<tr class='client-sum-row'><td colspan='2'>합계</td><td style='text-align:right; font-weight:bold;'>{grp_fee_sum:,}</td><td style='text-align:right; font-weight:bold;'>{grp_vat_sum:,}</td><td style='text-align:right; font-weight:bold;'>{grp_total_sum:,}</td><td>-</td></tr></tbody></table></div>"
+                full_settlement_client += f"<tr><td>{r['order_dt']}</td><td>{r.get('route','')}</td><td style='text-align:right;'>{fee_val:,}</td><td style='text-align:right;'>{vat_val:,}</td><td style='text-align:right;'>{total_val:,}</td></tr>"
+            full_settlement_client += f"<tr class='client-sum-row'><td colspan='2'>합계</td><td style='text-align:right; font-weight:bold;'>{grp_fee_sum:,}</td><td style='text-align:right; font-weight:bold;'>{grp_vat_sum:,}</td><td style='text-align:right; font-weight:bold;'>{grp_total_sum:,}</td></tr></tbody></table></div>"
 
-        # 기사 정산 데이터 조립: 기사명, 업체명, 입금일, 오더일, 노선, 기사운임, 부가세, 합계, 지급상태 + 기사별 소계 + 총합계
-        driver_grand_total = int(df['fee_out'].sum())
-        driver_grand_vat = int(df['vat2'].sum())
-        driver_grand_total_sum = int(df['total2'].sum())
-        full_settlement_driver = "<table><thead><tr style='background:#f2f2f2;'><th>기사명</th><th>업체명</th><th>입금일</th><th>오더일</th><th>노선</th><th>기사운임</th><th>부가세</th><th>합계</th></tr></thead><tbody>"
+        # 기사 정산 데이터 조립: 업체와 동일 카드 형식, 상단 "기사 정산서 [기사명]님", 테이블은 오더일·노선·기사운임·부가세·합계만 (기사명·업체명·입금일 제외)
+        full_settlement_driver = "<div class='client-settle-sections'>"
         for name, group in df.groupby('d_name'):
+            group = group.sort_values(by='order_dt', ascending=True)
             grp_sum = int(group['fee_out'].sum())
             grp_vat = int(group['vat2'].sum())
             grp_total = int(group['total2'].sum())
+            name_attr = (name or '').replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+            name_display = (name or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            full_settlement_driver += f"<div class='client-settle-card' data-driver='{name_attr}'><div class='client-settle-title'>기사 정산서 {name_display}님</div><table class='client-settle-table'><thead><tr><th>오더일</th><th>노선</th><th>기사운임</th><th>부가세</th><th>합계</th></tr></thead><tbody>"
             for _, r in group.iterrows():
-                in_dt = r.get('in_dt') or ''
                 fee_out_val = int(r['fee_out'])
                 vat_val = int(r['vat2'])
                 total_val = int(r['total2'])
-                full_settlement_driver += f"<tr><td>{name}</td><td>{r.get('client_name', '')}</td><td>{in_dt}</td><td>{r['order_dt']}</td><td>{r['route']}</td><td style='text-align:right;'>{fee_out_val:,}</td><td style='text-align:right;'>{vat_val:,}</td><td style='text-align:right;'>{total_val:,}</td></tr>"
-            full_settlement_driver += f"<tr style='background:#e8f0e8; font-weight:bold;'><td colspan='5'>[{name}] 소계</td><td style='text-align:right;'>{grp_sum:,}</td><td style='text-align:right;'>{grp_vat:,}</td><td style='text-align:right;'>{grp_total:,}</td></tr>"
-        if not df.empty and full_settlement_driver != "<table><thead><tr style='background:#f2f2f2;'><th>기사명</th><th>업체명</th><th>입금일</th><th>오더일</th><th>노선</th><th>기사운임</th><th>부가세</th><th>합계</th></tr></thead><tbody>":
-            full_settlement_driver += f"<tr style='background:#1a2a6c; color:white; font-weight:bold; font-size:14px;'><td colspan='5'>총합계</td><td style='text-align:right;'>{driver_grand_total:,}</td><td style='text-align:right;'>{driver_grand_vat:,}</td><td style='text-align:right;'>{driver_grand_total_sum:,}</td></tr>"
-        full_settlement_driver += "</tbody></table>"
+                full_settlement_driver += f"<tr><td>{r['order_dt']}</td><td>{r['route']}</td><td style='text-align:right;'>{fee_out_val:,}</td><td style='text-align:right;'>{vat_val:,}</td><td style='text-align:right;'>{total_val:,}</td></tr>"
+            full_settlement_driver += f"<tr class='client-sum-row'><td colspan='2'>합계</td><td style='text-align:right; font-weight:bold;'>{grp_sum:,}</td><td style='text-align:right; font-weight:bold;'>{grp_vat:,}</td><td style='text-align:right; font-weight:bold;'>{grp_total:,}</td></tr></tbody></table></div>"
+        full_settlement_driver += "</div>"
 
     content = f"""
     <style>
@@ -1338,14 +1526,16 @@ def statistics():
                 <option value="미지급" {'selected' if q_status=='미지급' else ''}>미지급</option>
                 <option value="조건부미지급" {'selected' if q_status=='조건부미지급' else ''}>조건부미지급</option>
                 <option value="고정" {'selected' if q_status=='고정' else ''}>고정</option>
-                            </select>
+            </select>
+            <label style="display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" name="month_end_client" value="1" {'checked' if q_month_client else ''}> 업체 월말합산</label>
+            <label style="display:inline-flex; align-items:center; gap:4px;"><input type="checkbox" name="month_end_driver" value="1" {'checked' if q_month_driver else ''}> 기사 월말합산</label>
             <button type="submit" class="btn-save">데이터 조회</button>
             <button type="button" onclick="location.href='/export_stats'+window.location.search" class="btn-status bg-green">엑셀 다운로드</button>
         </form>
 
         <div class="summary-grid" style="margin-top:25px;">
-            <div class="section"><h3>📅 월별 수익 요약</h3><div class="table-scroll"><table><thead><tr><th>연월</th><th>건수</th><th>업체운임</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th><th>수익</th></tr></thead><tbody>{summary_monthly}</tbody></table></div></div>
-            <div class="section"><h3>📆 최근 일별 요약</h3><div class="table-scroll"><table><thead><tr><th>날짜</th><th>건수</th><th>업체운임</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th></tr></thead><tbody>{summary_daily}</tbody></table></div></div>
+            <div class="section"><h3>📅 월별 수익 요약</h3><div class="table-scroll"><table><thead><tr><th>연월</th><th>건수</th><th>공급가액</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th><th>수익</th></tr></thead><tbody>{summary_monthly}</tbody></table></div></div>
+            <div class="section"><h3>📆 최근 일별 요약</h3><div class="table-scroll"><table><thead><tr><th>날짜</th><th>건수</th><th>공급가액</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th></tr></thead><tbody>{summary_daily}</tbody></table></div></div>
         </div>
 
         <div style="margin-top:30px;">
@@ -1357,7 +1547,7 @@ def statistics():
             <div style="display:flex; justify-content:space-between; margin-bottom:15px; align-items:center; flex-wrap:wrap; gap:8px;">
                 <h4 style="margin:0;">🧾 업체별 상세 매출 및 수금 현황</h4>
                 <div style="display:flex; gap:8px;">
-                    <a href="/export_custom_settlement?type=client{'' if not q_start else '&start='+q_start}{'' if not q_end else '&end='+q_end}{'' if not q_client else '&client='+q_client_enc}{'' if not q_status else '&status='+q_status_enc}" class="btn-status bg-green" style="text-decoration:none;">📥 업체 정산 엑셀</a>
+                    <a href="/export_custom_settlement?type=client{'' if not q_start else '&start='+q_start}{'' if not q_end else '&end='+q_end}{'' if not q_client else '&client='+q_client_enc}{'' if not q_status else '&status='+q_status_enc}{q_month_client_enc}{q_month_driver_enc}" class="btn-status bg-green" style="text-decoration:none;">📥 업체 정산 엑셀</a>
                     <button onclick="captureSettle('clientZone')" class="btn-status bg-orange">🖼️ 업체 정산서 이미지 저장</button>
                 </div>
             </div>
@@ -1368,7 +1558,7 @@ def statistics():
             <div style="display:flex; justify-content:space-between; margin-bottom:15px; align-items:center; flex-wrap:wrap; gap:8px;">
                 <h4 style="margin:0;">🧾 기사별 상세 지출 및 지급 현황</h4>
                 <div style="display:flex; gap:8px;">
-                    <a href="/export_custom_settlement?type=driver{'' if not q_start else '&start='+q_start}{'' if not q_end else '&end='+q_end}{'' if not q_driver else '&driver='+q_driver_enc}{'' if not q_status else '&status='+q_status_enc}" class="btn-status bg-green" style="text-decoration:none;">📥 기사 정산 엑셀</a>
+                    <a href="/export_custom_settlement?type=driver{'' if not q_start else '&start='+q_start}{'' if not q_end else '&end='+q_end}{'' if not q_driver else '&driver='+q_driver_enc}{'' if not q_status else '&status='+q_status_enc}{q_month_client_enc}{q_month_driver_enc}" class="btn-status bg-green" style="text-decoration:none;">📥 기사 정산 엑셀</a>
                     <button onclick="captureSettle('driverZone')" class="btn-status bg-orange">🖼️ 기사 정산서 이미지 저장</button>
                 </div>
             </div>
@@ -1395,13 +1585,11 @@ def statistics():
             const targetEl = document.getElementById(targetId);
             let bodyHtml;
             if (isDriver) {{
-                bodyHtml = '<table border="1" style="width:100%; border-collapse:collapse; font-size:14px; text-align:center;"><thead><tr style="background:#f2f2f2;"><th>기사명</th><th>업체명</th><th>입금일</th><th>오더일</th><th>노선</th><th>기사운임</th><th>부가세</th><th>합계</th></tr></thead><tbody>' + (targetEl.querySelector('tbody').innerHTML) + '</tbody></table>';
+                bodyHtml = targetEl.innerHTML;
                 printContent.innerHTML = `
-                    <div style="padding:40px; background:white; font-family: 'Malgun Gothic', sans-serif;">
-                        <h1 style="text-align:center; font-size:32px; border-bottom:3px solid #000; padding-bottom:15px; margin-bottom:20px;">기사 정산서</h1>
-                        <div style="text-align:right; margin-bottom:10px;">출력일: ${{new Date().toLocaleDateString('ko-KR', {{ timeZone: 'Asia/Seoul' }})}}</div>
-                        ${{bodyHtml}}
-                        <div style="text-align:right; margin-top:40px; font-weight:bold; font-size:24px;">에스엠 로지텍 (인)</div>
+                    <div style="padding:40px; background:white; font-family: 'Malgun Gothic', sans-serif; max-width:800px;">
+                        <div style="text-align:right; margin-bottom:20px; font-size:13px; color:#64748b;">출력일: ${{new Date().toLocaleDateString('ko-KR', {{ timeZone: 'Asia/Seoul' }})}}</div>
+                        <div style="margin-bottom:30px;">${{bodyHtml}}</div>
                     </div>
                 `;
             }} else {{
@@ -1432,6 +1620,8 @@ def statistics():
 def export_custom_settlement():
     t = request.args.get('type', 'client'); s = request.args.get('start',''); e = request.args.get('end','')
     c = request.args.get('client',''); d = request.args.get('driver',''); st = request.args.get('status', '')
+    month_client = request.args.get('month_end_client', '')
+    month_driver = request.args.get('month_end_driver', '')
     fixed_c_nums = {str(dr.get('차량번호', '')).strip() for dr in drivers_db if str(dr.get('개인/고정', '')).strip() == '고정'}
     fixed_c_nums.discard('')
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
@@ -1448,6 +1638,8 @@ def export_custom_settlement():
         if s and e and not (s <= o_dt <= e): continue
         if c and c not in str(r['client_name']): continue
         if d and d not in str(r['d_name']): continue
+        if month_client and (str(r.get('month_end_client') or '').strip() not in ('1', 'Y')): continue
+        if month_driver and (str(r.get('month_end_driver') or '').strip() not in ('1', 'Y')): continue
         st_map = {'미수':'misu_only', '조건부미수':'cond_misu', '수금완료':'done_in', '지급완료':'done_out', '미지급':'pay_only', '조건부미지급':'cond_pay'}
         st_use = st_map.get(st, st)
         if st_use == 'misu_all' and in_dt: continue
@@ -1469,17 +1661,17 @@ def export_custom_settlement():
     if t == 'client':
         for name, group in df.groupby(group_col):
             grp_fee, grp_vat, grp_total = 0, 0, 0
-            for idx, row in group.iterrows():
+            for idx, row in group.sort_values(by='order_dt', ascending=True).iterrows():
                 fee, vat1, total1, _, _, _ = calc_totals_with_vat(row)
-                excel_list.append({'구분': name, '오더일': row['order_dt'], '노선': row['route'], '업체운임': fee, '부가세': vat1, '합계': total1, '미수': row.get('m_st', '')})
+                excel_list.append({'구분': name, '오더일': row['order_dt'], '노선': row['route'], '공급가액': fee, '부가세': vat1, '합계': total1})
                 grp_fee += fee; grp_vat += vat1; grp_total += total1
-            excel_list.append({'구분': f'[{name}] 합계', '오더일': '-', '노선': '-', '업체운임': grp_fee, '부가세': grp_vat, '합계': grp_total, '미수': '-'})
+            excel_list.append({'구분': f'[{name}] 합계', '오더일': '-', '노선': '-', '공급가액': grp_fee, '부가세': grp_vat, '합계': grp_total})
             excel_list.append({})
     else:
         df['fee_out'] = pd.to_numeric(df['fee_out'], errors='coerce').fillna(0)
         for name, group in df.groupby(group_col):
             grp_fee, grp_vat, grp_total = 0, 0, 0
-            for idx, row in group.iterrows():
+            for idx, row in group.sort_values(by='order_dt', ascending=True).iterrows():
                 _, _, _, fee_out, vat2, total2 = calc_totals_with_vat(row)
                 excel_list.append({'구분': name, '업체명': row.get('client_name',''), '오더일': row['order_dt'], '노선': row['route'], '기사운임': fee_out, '부가세': vat2, '합계': total2, '지급상태': row.get('p_st', '')})
                 grp_fee += fee_out; grp_vat += vat2; grp_total += total2
@@ -1507,7 +1699,7 @@ def export_misu_info():
         elif not q_st and not in_dt: pass
         else: continue
         if q_name and q_name not in str(row_dict['client_name']): continue
-        export_data.append({'거래처명': row_dict['client_name'], '사업자번호': row_dict['biz_num'], '대표자': row_dict['biz_owner'], '메일': row_dict['mail'], '연락처': row_dict['c_phone'], '노선': row_dict['route'], '업체운임': int(calc_fee_total(row_dict)), '오더일': row_dict['order_dt'], '결제예정일': row_dict['pay_due_dt']})
+        export_data.append({'거래처명': row_dict['client_name'], '사업자번호': row_dict['biz_num'], '대표자': row_dict['biz_owner'], '메일': row_dict['mail'], '연락처': row_dict['c_phone'], '노선': row_dict['route'], '공급가액': int(calc_supply_value(row_dict)), '오더일': row_dict['order_dt'], '결제예정일': row_dict['pay_due_dt']})
     df = pd.DataFrame(export_data)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w: df.to_excel(w, index=False)
@@ -1522,7 +1714,7 @@ def export_tax_not_issued():
     client_by_name = {str(c.get('업체명') or '').strip(): c for c in clients_db if (c.get('업체명') or '').strip()}
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
-    cols = ['사업자구분', '결제특이사항', '발행구분', '사업자등록번호', '대표자명', '사업자주소', '업태', '종목', '메일주소', '오더일', '노선', '업체명', '업체운임', '부가세', '합계']
+    cols = ['사업자구분', '결제특이사항', '발행구분', '사업자등록번호', '대표자명', '사업자주소', '업태', '종목', '메일주소', '오더일', '노선', '업체명', '공급가액', '부가세', '합계']
     export_with_vat = []   # 부가세 있는 건 (발행 대상)
     export_no_vat = []     # 부가세 없는 건 (별계, 계산서 발행 불필요)
     for row in rows:
@@ -1551,7 +1743,7 @@ def export_tax_not_issued():
             '오더일': order_dt,
             '노선': r.get('route', ''),
             '업체명': cname or r.get('client_name', ''),
-            '업체운임': fee,
+            '공급가액': fee,
             '부가세': vat1,
             '합계': total1,
         }
@@ -1561,17 +1753,17 @@ def export_tax_not_issued():
             export_no_vat.append(row_data)
     excel_rows = []
     if export_with_vat:
-        df_main = pd.DataFrame(export_with_vat).sort_values(by=['업체명', '오더일', '노선', '업체운임'], ascending=[True, True, True, True], na_position='last')
+        df_main = pd.DataFrame(export_with_vat).sort_values(by=['업체명', '오더일', '노선', '공급가액'], ascending=[True, True, True, True], na_position='last')
         for _, r in df_main.iterrows():
             excel_rows.append({c: r[c] for c in cols})
-        sum_fee = int(df_main['업체운임'].sum())
+        sum_fee = int(df_main['공급가액'].sum())
         sum_vat = int(df_main['부가세'].sum())
         sum_total = int(df_main['합계'].sum())
-        excel_rows.append({c: ('총합계' if c == '업체명' else sum_fee if c == '업체운임' else sum_vat if c == '부가세' else sum_total if c == '합계' else '') for c in cols})
+        excel_rows.append({c: ('총합계' if c == '업체명' else sum_fee if c == '공급가액' else sum_vat if c == '부가세' else sum_total if c == '합계' else '') for c in cols})
     excel_rows.append({})
     if export_no_vat:
         excel_rows.append({c: ('[부가세 없는 건 - 계산서 발행 불필요]' if c == '업체명' else '') for c in cols})
-        df_no = pd.DataFrame(export_no_vat).sort_values(by=['업체명', '오더일', '노선', '업체운임'], ascending=[True, True, True, True], na_position='last')
+        df_no = pd.DataFrame(export_no_vat).sort_values(by=['업체명', '오더일', '노선', '공급가액'], ascending=[True, True, True, True], na_position='last')
         for _, r in df_no.iterrows():
             excel_rows.append({c: r[c] for c in cols})
     df_out = pd.DataFrame(excel_rows if excel_rows else [{}], columns=cols)
@@ -1661,6 +1853,8 @@ def export_stats():
     s = request.args.get('start',''); e = request.args.get('end','')
     c = request.args.get('client',''); d = request.args.get('driver','')
     st = request.args.get('status', '')
+    month_client = request.args.get('month_end_client', '')
+    month_driver = request.args.get('month_end_driver', '')
     
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
@@ -1683,6 +1877,8 @@ def export_stats():
         if s and e and not (s <= (r['order_dt'] or "") <= e): continue
         if c and c not in str(r['client_name']): continue
         if d and d not in str(r['d_name']): continue
+        if month_client and (str(r.get('month_end_client') or '').strip() not in ('1', 'Y')): continue
+        if month_driver and (str(r.get('month_end_driver') or '').strip() not in ('1', 'Y')): continue
         if st:
             if st in ["미수", "조건부미수", "수금완료"] and st != m_st: continue
             if st in ["미지급", "조건부미지급", "지급완료"] and st != p_st: continue
@@ -1692,13 +1888,13 @@ def export_stats():
         fee, vat1, total1, fee_out, vat2, total2 = calc_totals_with_vat(r)
         export_data.append({
             '오더일': r['order_dt'], '업체명': r['client_name'], '노선': r['route'],
-            '기사명': r['d_name'], '업체운임': fee, '업체부가세': vat1, '매출(업체합계)': total1, '수금상태': m_st,
+            '기사명': r['d_name'], '공급가액': fee, '부가세': vat1, '매출(합계)': total1, '수금상태': m_st,
             '기사운임': fee_out, '기사부가세': vat2, '지출(기사합계)': total2, '지급상태': p_st, '기사구분': d_type
         })
         
     df = pd.DataFrame(export_data)
     if not df.empty:
-        sum_row = {'오더일': '합계', '업체명': '', '노선': '', '기사명': '', '업체운임': int(df['업체운임'].sum()), '업체부가세': int(df['업체부가세'].sum()), '매출(업체합계)': int(df['매출(업체합계)'].sum()), '수금상태': '', '기사운임': int(df['기사운임'].sum()), '기사부가세': int(df['기사부가세'].sum()), '지출(기사합계)': int(df['지출(기사합계)'].sum()), '지급상태': '', '기사구분': ''}
+        sum_row = {'오더일': '합계', '업체명': '', '노선': '', '기사명': '', '공급가액': int(df['공급가액'].sum()), '부가세': int(df['부가세'].sum()), '매출(합계)': int(df['매출(합계)'].sum()), '수금상태': '', '기사운임': int(df['기사운임'].sum()), '기사부가세': int(df['기사부가세'].sum()), '지출(기사합계)': int(df['지출(기사합계)'].sum()), '지급상태': '', '기사구분': ''}
         df = pd.concat([df, pd.DataFrame([sum_row])], ignore_index=True)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w:
@@ -1828,7 +2024,7 @@ def save_ledger_api():
                        [data.get(k, '') for k in keys])
         target_id = cursor.lastrowid
 
-    details = f"업체:{data.get('client_name')}, 노선:{data.get('route')}, 업체운임:{int(calc_fee_total(data))}, 기사운임:{data.get('fee_out', '')}"
+    details = f"업체:{data.get('client_name')}, 노선:{data.get('route')}, 공급가액:{int(calc_supply_value(data))}, 기사운임:{data.get('fee_out', '')}"
     cursor.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)",
                    (action_type, target_id, details))
 
@@ -1893,17 +2089,27 @@ def get_ledger():
     per_page = 50
     start_dt = request.args.get('start', '')
     end_dt = request.args.get('end', '')
+    month_end_client = request.args.get('month_end_client', '')
+    month_end_driver = request.args.get('month_end_driver', '')
     
     conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
     
     # 기본 쿼리
     query = "SELECT * FROM ledger"
     params = []
+    conditions = []
     
-    # 날짜 필터링 조건 추가
+    # 날짜 필터링
     if start_dt and end_dt:
-        query += " WHERE order_dt BETWEEN ? AND ?"
+        conditions.append(" order_dt BETWEEN ? AND ?")
         params.extend([start_dt, end_dt])
+    # 월말합산 필터
+    if month_end_client:
+        conditions.append(" (month_end_client = '1' OR month_end_client = 'Y')")
+    if month_end_driver:
+        conditions.append(" (month_end_driver = '1' OR month_end_driver = 'Y')")
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
         
     query += " ORDER BY id DESC"
     
@@ -1935,6 +2141,59 @@ def get_ledger_row(row_id):
     return jsonify(d)
 
 
+@app.route('/api/delete_ledger/<int:row_id>', methods=['POST', 'DELETE'])
+@login_required
+def delete_ledger_api(row_id):
+    """장부 행 삭제"""
+    conn = sqlite3.connect('ledger.db')
+    cur = conn.execute("SELECT id FROM ledger WHERE id = ?", (row_id,)).fetchone()
+    if not cur:
+        conn.close()
+        return jsonify({"status": "error", "message": "not found"}), 404
+    conn.execute("DELETE FROM ledger WHERE id = ?", (row_id,))
+    conn.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)", ("삭제", row_id, f"장부 ID {row_id} 삭제"))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
+
+
+@app.route('/api/recall_ledger/<int:row_id>', methods=['POST'])
+@login_required
+def recall_ledger_api(row_id):
+    """오더 재호출: 동일 내용으로 현재 시간 기준 새 행 생성"""
+    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM ledger WHERE id = ?", (row_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"status": "error", "message": "not found"}), 404
+    keys = [c['k'] for c in FULL_COLUMNS]
+    now = now_kst()
+    order_dt = now.strftime('%Y-%m-%d')
+    dispatch_dt = now.strftime('%Y-%m-%dT%H:%M')
+    r = dict(row)
+    data = {k: r.get(k, '') for k in keys}
+    data['order_dt'] = order_dt
+    data['dispatch_dt'] = dispatch_dt
+    data['in_dt'] = ''
+    data['out_dt'] = ''
+    data['tax_chk'] = ''
+    data['tax_dt'] = ''
+    data['issue_dt'] = ''
+    data['tax_img'] = ''
+    data['ship_img'] = ''
+    data['is_mail_done'] = ''
+    data['mail_dt'] = ''
+    conn = sqlite3.connect('ledger.db')
+    cursor = conn.cursor()
+    placeholders = ", ".join(['?'] * len(keys))
+    cursor.execute(f"INSERT INTO ledger ({', '.join([f'[{k}]' for k in keys])}) VALUES ({placeholders})", [data.get(k, '') for k in keys])
+    new_id = cursor.lastrowid
+    cursor.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)", ("재호출", new_id, f"원본 ID {row_id} → 신규 ID {new_id}"))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success", "id": new_id})
+
+
 # update_status에서 허용할 컬럼명 화이트리스트 (SQL injection 방지)
 ALLOWED_STATUS_KEYS = {c['k'] for c in FULL_COLUMNS}
 
@@ -1960,6 +2219,12 @@ def update_status():
     if key == 'tax_chk':
         tax_dt_val = now_kst().strftime('%Y-%m-%d') if data.get('value') == '발행완료' else ''
         cursor.execute("UPDATE ledger SET tax_dt = ? WHERE id = ?", (tax_dt_val, row_id))
+    # tax_dt 직접 입력 시 tax_chk 발행완료
+    if key == 'tax_dt':
+        cursor.execute("UPDATE ledger SET tax_chk = ? WHERE id = ?", ('발행완료' if data.get('value') else '', row_id))
+    # mail_dt 직접 입력 시 is_mail_done 확인완료
+    if key == 'mail_dt':
+        cursor.execute("UPDATE ledger SET is_mail_done = ? WHERE id = ?", ('확인완료' if data.get('value') else '미확인', row_id))
     if key in ('pay_method_client', 'pay_method_driver'):
         row = cursor.execute("SELECT * FROM ledger WHERE id = ?", (row_id,)).fetchone()
         if row:
@@ -1988,14 +2253,14 @@ def export_clients():
     for r in ledger_rows:
         cname = (r[0] or '').strip()
         if cname and cname not in latest_order:
-            fee_total = int(calc_fee_total({'fee': r[3], 'comm': r[4], 'pre_post': r[5]}))
-            latest_order[cname] = {'오더일': r[1] or '', '노선': r[2] or '', '업체운임': fee_total}
-    # 컬럼 순서: 비고, 사업자구분, 결제특이사항, 발행구분, 사업자등록번호, 대표자명, 사업자주소, 업태, 종목, 메일주소, 오더일, 노선, 업체운임
-    export_cols = ['비고', '사업자구분', '결제특이사항', '발행구분', '사업자등록번호', '대표자명', '사업자주소', '업태', '종목', '메일주소', '오더일', '노선', '업체운임']
+            fee_total = int(calc_supply_value({'fee': r[3], 'comm': r[4], 'pre_post': r[5]}))
+            latest_order[cname] = {'오더일': r[1] or '', '노선': r[2] or '', '공급가액': fee_total}
+    # 컬럼 순서: 비고, 사업자구분, 결제특이사항, 발행구분, 사업자등록번호, 대표자명, 사업자주소, 업태, 종목, 메일주소, 오더일, 노선, 공급가액
+    export_cols = ['비고', '사업자구분', '결제특이사항', '발행구분', '사업자등록번호', '대표자명', '사업자주소', '업태', '종목', '메일주소', '오더일', '노선', '공급가액']
     export_data = []
     for c in clients_db:
         cname = (c.get('업체명') or '').strip()
-        order_info = latest_order.get(cname, {'오더일': '', '노선': '', '업체운임': ''})
+        order_info = latest_order.get(cname, {'오더일': '', '노선': '', '공급가액': ''})
         row = {
             '비고': c.get('비고', ''),
             '사업자구분': c.get('사업자구분', ''),
@@ -2009,7 +2274,7 @@ def export_clients():
             '메일주소': c.get('메일주소', ''),
             '오더일': order_info['오더일'],
             '노선': order_info['노선'],
-            '업체운임': order_info['업체운임'],
+            '공급가액': order_info['공급가액'],
         }
         export_data.append(row)
     df = pd.DataFrame(export_data, columns=export_cols)
@@ -2018,6 +2283,38 @@ def export_clients():
         df.to_excel(w, index=False)
     out.seek(0)
     return send_file(out, as_attachment=True, download_name="clients.xlsx")
+
+@app.route('/api/delete_client/<int:row_id>', methods=['POST', 'DELETE'])
+@login_required
+def api_delete_client(row_id):
+    conn = sqlite3.connect('ledger.db')
+    conn.execute("DELETE FROM clients WHERE rowid = ?", (row_id,))
+    conn.commit(); conn.close()
+    load_db_to_mem()
+    return jsonify({"status": "success"})
+
+@app.route('/api/update_client/<int:row_id>', methods=['POST'])
+@login_required
+def api_update_client(row_id):
+    data = request.json or {}
+    conn = sqlite3.connect('ledger.db')
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(clients)")
+    cols = [r[1] for r in cursor.fetchall() if r[1] != 'id']
+    updates = []
+    vals = []
+    for c in cols:
+        if c in data:
+            updates.append(f'[{c}] = ?')
+            vals.append(str(data.get(c, '')))
+    if not updates:
+        conn.close()
+        return jsonify({"status": "error", "message": "수정할 데이터 없음"}), 400
+    vals.append(row_id)
+    cursor.execute(f"UPDATE clients SET {', '.join(updates)} WHERE rowid = ?", vals)
+    conn.commit(); conn.close()
+    load_db_to_mem()
+    return jsonify({"status": "success"})
 
 @app.route('/manage_clients', methods=['GET', 'POST'])
 @login_required 
@@ -2036,7 +2333,20 @@ def manage_clients():
                 df.to_sql('clients', conn, if_exists='replace', index=False)
                 conn.commit(); conn.close(); load_db_to_mem()
             except Exception as e: return f"업로드 오류: {str(e)}"
-    rows_html = "".join([f"<tr class=\"filter-row\" data-search=\"{' '.join([str(r.get(c, '')).lower() for c in CLIENT_COLS])}\">{''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])}</tr>" for r in clients_db])
+    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    try:
+        clients_with_id = conn.execute("SELECT rowid as id, * FROM clients").fetchall()
+    except sqlite3.OperationalError:
+        clients_with_id = []
+    conn.close()
+    clients_with_id = [dict(r) for r in clients_with_id]
+    def _client_row(r):
+        cid = r.get('id', '')
+        search = ' '.join([str(r.get(c, '')).lower() for c in CLIENT_COLS])
+        btns = f'<td style="white-space:nowrap;"><button type="button" class="btn-edit" onclick="editClient({cid})" style="padding:4px 8px; font-size:11px; margin-right:4px;">수정</button><button type="button" class="btn-status bg-red" onclick="deleteClient({cid})" style="padding:4px 8px; font-size:11px;">삭제</button></td>'
+        cells = ''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])
+        return f'<tr class="filter-row" data-id="{cid}" data-search="{search}">{btns}{cells}</tr>'
+    rows_html = "".join([_client_row(r) for r in clients_with_id])
     content = f"""<div class="section"><h2>업체 관리</h2>
     <div style="margin-bottom:15px;">
         <form method="post" enctype="multipart/form-data" style="display:inline;"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form>
@@ -2045,7 +2355,18 @@ def manage_clients():
         <input type="text" id="clientFilter" placeholder="업체명, 사업자번호, 대표자명 등 검색..." style="width:280px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" oninput="filterTable('clientFilter', 'clientTableBody')">
         <span id="clientFilterCount" style="font-size:12px; color:#64748b; margin-left:8px;"></span>
     </div>
-    <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody id="clientTableBody">{rows_html}</tbody></table></div>
+    <div class="scroll-top" id="clientScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in CLIENT_COLS])}</tr></tbody></table></div>
+    <div class="scroll-x" id="clientScroll"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody id="clientTableBody">{rows_html}</tbody></table></div>
+    <div class="scroll-top" id="clientScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in CLIENT_COLS])}</tr></tbody></table></div>
+    <div id="clientEditModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5);">
+        <div style="background:white; max-width:600px; margin:40px auto; padding:24px; border-radius:10px; max-height:90vh; overflow-y:auto;">
+            <h3 style="margin:0 0 20px 0;">업체 수정</h3>
+            <form id="clientEditForm" onsubmit="event.preventDefault(); const id=this.dataset.editId; const d={{}}; this.querySelectorAll('[name]').forEach(inp=>d[inp.name]=inp.value); fetch('/api/update_client/'+id, {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(d)}}).then(r=>r.json()).then(res=>{{if(res.status==='success'){{document.getElementById('clientEditModal').style.display='none';location.reload();}}else alert(res.message);}});">
+                {"".join([f'<div style="margin-bottom:10px;"><label style="display:block; font-size:12px; margin-bottom:4px;">{c}</label><input type="text" name="{c}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px;"></div>' for c in CLIENT_COLS])}
+                <div style="margin-top:20px; display:flex; gap:10px;"><button type="submit" class="btn-save">저장</button><button type="button" class="btn" onclick="document.getElementById('clientEditModal').style.display='none'">취소</button></div>
+            </form>
+        </div>
+    </div>
     <script>
     function filterTable(inputId, tbodyId) {{
         const q = document.getElementById(inputId).value.trim().toLowerCase();
@@ -2060,6 +2381,51 @@ def manage_clients():
         if (countEl) countEl.textContent = visible + ' / ' + rows.length + '건';
     }}
     document.getElementById('clientFilter') && filterTable('clientFilter', 'clientTableBody');
+    function editClient(id) {{
+        const row = document.querySelector('#clientTableBody tr[data-id="'+id+'"]');
+        if(!row) return;
+        const cells = row.querySelectorAll('td');
+        const cols = {json.dumps(CLIENT_COLS)};
+        const data = {{}};
+        cols.forEach((c, i) => {{ data[c] = (cells[i+1] && cells[i+1].innerText) || ''; }});
+        const form = document.getElementById('clientEditForm');
+        if(form) {{ cols.forEach(c => {{ const inp = form.querySelector('[name="'+c+'"]'); if(inp) inp.value = data[c] || ''; }}); form.dataset.editId = id; document.getElementById('clientEditModal').style.display = 'block'; }}
+    }}
+    function deleteClient(id) {{ if(!confirm('이 업체를 삭제하시겠습니까?')) return; fetch('/api/delete_client/' + id, {{method:'POST'}}).then(r=>r.json()).then(res=>{{if(res.status==='success')location.reload();else alert(res.message||'삭제 실패');}}).catch(()=>alert('삭제 중 오류')); }}
+    (function() {{
+        const topEl = document.getElementById('clientScrollTop');
+        const mainEl = document.getElementById('clientScroll');
+        const botEl = document.getElementById('clientScrollBottom');
+        if (!topEl || !mainEl) return;
+        function matchWidth() {{
+            const mainTbl = mainEl.querySelector('table');
+            const topTbl = topEl.querySelector('table');
+            const botTbl = botEl ? botEl.querySelector('table') : null;
+            if (mainTbl && topTbl) {{
+                const mainRow = mainTbl.querySelector('thead tr') || mainTbl.querySelector('tr');
+                const topRow = topTbl.querySelector('tr');
+                const botRow = botTbl ? botTbl.querySelector('tr') : null;
+                if (mainRow && topRow && mainRow.cells.length === topRow.cells.length) {{
+                    for (let i = 0; i < mainRow.cells.length; i++) {{
+                        const w = mainRow.cells[i].offsetWidth;
+                        topRow.cells[i].style.width = w + 'px';
+                        topRow.cells[i].style.minWidth = w + 'px';
+                        if (botRow && botRow.cells[i]) {{ botRow.cells[i].style.width = w + 'px'; botRow.cells[i].style.minWidth = w + 'px'; }}
+                    }}
+                }}
+            }}
+            const w = mainEl.clientWidth;
+            topEl.style.width = w + 'px';
+            if (botEl) botEl.style.width = w + 'px';
+        }}
+        let syncing = false;
+        function sync(src) {{ if(syncing) return; syncing = true; const left = src.scrollLeft; if(topEl.scrollLeft !== left) topEl.scrollLeft = left; if(mainEl.scrollLeft !== left) mainEl.scrollLeft = left; if(botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left; requestAnimationFrame(()=>{{syncing=false;}}); }}
+        topEl.addEventListener('scroll', () => sync(topEl));
+        mainEl.addEventListener('scroll', () => sync(mainEl));
+        if(botEl) botEl.addEventListener('scroll', () => sync(botEl));
+        setTimeout(matchWidth, 80);
+        window.addEventListener('resize', matchWidth);
+    }})();
     </script></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 # --- [도착현황 라우트 및 API] ---
@@ -2505,7 +2871,13 @@ def manage_drivers():
     
     # 출력 컬럼 정의 (은행명, 예금주 포함)
     DISPLAY_DRIVER_COLS = ["기사명", "차량번호", "연락처", "은행명", "계좌번호", "예금주", "사업자번호", "사업자", "개인/고정", "메모"]
-    rows_html = "".join([f"<tr class=\"filter-row\" data-search=\"{' '.join([str(r.get(c, '')).lower() for c in DISPLAY_DRIVER_COLS])}\">{''.join([f'<td>{r.get(c, "")}</td>' for c in DISPLAY_DRIVER_COLS])}</tr>" for r in drivers_db])
+    def _driver_row(r):
+        did = r.get('id', '')
+        search = ' '.join([str(r.get(c, '')).lower() for c in DISPLAY_DRIVER_COLS])
+        btns = f'<td style="white-space:nowrap;"><button type="button" class="btn-edit" onclick="editDriver({did})" style="padding:4px 8px; font-size:11px; margin-right:4px;">수정</button><button type="button" class="btn-status bg-red" onclick="deleteDriver({did})" style="padding:4px 8px; font-size:11px;">삭제</button></td>'
+        cells = ''.join([f'<td>{r.get(c, "")}</td>' for c in DISPLAY_DRIVER_COLS])
+        return f'<tr class="filter-row" data-id="{did}" data-search="{search}">{btns}{cells}</tr>'
+    rows_html = "".join([_driver_row(r) for r in drivers_db])
     content = f"""<div class="section"><h2>🚚 기사 관리 (은행/계좌 정보)</h2>
     {err_msg}
     <form method="post" enctype="multipart/form-data" style="margin-bottom:15px;">
@@ -2515,7 +2887,18 @@ def manage_drivers():
         <input type="text" id="driverFilter" placeholder="기사명, 차량번호, 연락처 등 검색..." style="width:280px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" oninput="filterTable('driverFilter', 'driverTableBody')">
         <span id="driverFilterCount" style="font-size:12px; color:#64748b; margin-left:8px;"></span>
     </div>
-    <div class="scroll-x"><table><thead><tr>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody id="driverTableBody">{rows_html}</tbody></table></div>
+    <div class="scroll-top" id="driverScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in DISPLAY_DRIVER_COLS])}</tr></tbody></table></div>
+    <div class="scroll-x" id="driverScroll"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody id="driverTableBody">{rows_html}</tbody></table></div>
+    <div class="scroll-top" id="driverScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in DISPLAY_DRIVER_COLS])}</tr></tbody></table></div>
+    <div id="driverEditModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5);">
+        <div style="background:white; max-width:600px; margin:40px auto; padding:24px; border-radius:10px; max-height:90vh; overflow-y:auto;">
+            <h3 style="margin:0 0 20px 0;">기사 수정</h3>
+            <form id="driverEditForm" onsubmit="event.preventDefault(); const id=this.dataset.editId; const d={{}}; this.querySelectorAll('[name]').forEach(inp=>d[inp.name]=inp.value); fetch('/api/update_driver/'+id, {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(d)}}).then(r=>r.json()).then(res=>{{if(res.status==='success'){{document.getElementById('driverEditModal').style.display='none';location.reload();}}else alert(res.message);}});">
+                {"".join([f'<div style="margin-bottom:10px;"><label style="display:block; font-size:12px; margin-bottom:4px;">{c}</label><input type="text" name="{c}" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px;"></div>' for c in DISPLAY_DRIVER_COLS])}
+                <div style="margin-top:20px; display:flex; gap:10px;"><button type="submit" class="btn-save">저장</button><button type="button" class="btn" onclick="document.getElementById('driverEditModal').style.display='none'">취소</button></div>
+            </form>
+        </div>
+    </div>
     <script>
     function filterTable(inputId, tbodyId) {{
         const q = document.getElementById(inputId).value.trim().toLowerCase();
@@ -2530,8 +2913,83 @@ def manage_drivers():
         if (countEl) countEl.textContent = visible + ' / ' + rows.length + '건';
     }}
     document.getElementById('driverFilter') && filterTable('driverFilter', 'driverTableBody');
+    function editDriver(id) {{
+        const row = document.querySelector('#driverTableBody tr[data-id="'+id+'"]');
+        if(!row) return;
+        const cells = row.querySelectorAll('td');
+        const cols = {json.dumps(DISPLAY_DRIVER_COLS)};
+        const form = document.getElementById('driverEditForm');
+        if(form) {{ cols.forEach((c, i) => {{ const inp = form.querySelector('[name="'+c+'"]'); if(inp) inp.value = (cells[i+1] && cells[i+1].innerText) || ''; }}); form.dataset.editId = id; document.getElementById('driverEditModal').style.display = 'block'; }}
+    }}
+    function deleteDriver(id) {{ if(!confirm('이 기사를 삭제하시겠습니까?')) return; fetch('/api/delete_driver/' + id, {{method:'POST'}}).then(r=>r.json()).then(res=>{{if(res.status==='success')location.reload();else alert(res.message||'삭제 실패');}}).catch(()=>alert('삭제 중 오류')); }}
+    (function() {{
+        const topEl = document.getElementById('driverScrollTop');
+        const mainEl = document.getElementById('driverScroll');
+        const botEl = document.getElementById('driverScrollBottom');
+        if (!topEl || !mainEl) return;
+        function matchWidth() {{
+            const mainTbl = mainEl.querySelector('table');
+            const topTbl = topEl.querySelector('table');
+            const botTbl = botEl ? botEl.querySelector('table') : null;
+            if (mainTbl && topTbl) {{
+                const mainRow = mainTbl.querySelector('thead tr') || mainTbl.querySelector('tr');
+                const topRow = topTbl.querySelector('tr');
+                const botRow = botTbl ? botTbl.querySelector('tr') : null;
+                if (mainRow && topRow && mainRow.cells.length === topRow.cells.length) {{
+                    for (let i = 0; i < mainRow.cells.length; i++) {{
+                        const w = mainRow.cells[i].offsetWidth;
+                        topRow.cells[i].style.width = w + 'px';
+                        topRow.cells[i].style.minWidth = w + 'px';
+                        if (botRow && botRow.cells[i]) {{ botRow.cells[i].style.width = w + 'px'; botRow.cells[i].style.minWidth = w + 'px'; }}
+                    }}
+                }}
+            }}
+            const w = mainEl.clientWidth;
+            topEl.style.width = w + 'px';
+            if (botEl) botEl.style.width = w + 'px';
+        }}
+        let syncing = false;
+        function sync(src) {{ if(syncing) return; syncing = true; const left = src.scrollLeft; if(topEl.scrollLeft !== left) topEl.scrollLeft = left; if(mainEl.scrollLeft !== left) mainEl.scrollLeft = left; if(botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left; requestAnimationFrame(()=>{{syncing=false;}}); }}
+        topEl.addEventListener('scroll', () => sync(topEl));
+        mainEl.addEventListener('scroll', () => sync(mainEl));
+        if(botEl) botEl.addEventListener('scroll', () => sync(botEl));
+        setTimeout(matchWidth, 80);
+        window.addEventListener('resize', matchWidth);
+    }})();
     </script></div>"""
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
+
+@app.route('/api/delete_driver/<int:driver_id>', methods=['POST', 'DELETE'])
+@login_required
+def api_delete_driver(driver_id):
+    conn = sqlite3.connect('ledger.db')
+    conn.execute("DELETE FROM drivers WHERE id = ?", (driver_id,))
+    conn.commit(); conn.close()
+    load_db_to_mem()
+    return jsonify({"status": "success"})
+
+@app.route('/api/update_driver/<int:driver_id>', methods=['POST'])
+@login_required
+def api_update_driver(driver_id):
+    data = request.json or {}
+    conn = sqlite3.connect('ledger.db')
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(drivers)")
+    cols = [r[1] for r in cursor.fetchall() if r[1] != 'id']
+    updates = []
+    vals = []
+    for c in cols:
+        if c in data:
+            updates.append(f'[{c}] = ?')
+            vals.append(str(data.get(c, '')))
+    if not updates:
+        conn.close()
+        return jsonify({"status": "error", "message": "수정할 데이터 없음"}), 400
+    vals.append(driver_id)
+    cursor.execute(f"UPDATE drivers SET {', '.join(updates)} WHERE id = ?", vals)
+    conn.commit(); conn.close()
+    load_db_to_mem()
+    return jsonify({"status": "success"})
 
 # 배포 시 FLASK_DEBUG=0 또는 미설정, FLASK_SECRET_KEY·ADMIN_PW 반드시 설정
 if __name__ == '__main__':
