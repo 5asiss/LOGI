@@ -319,8 +319,12 @@ BASE_HTML = """
         .section { background: white; padding: 18px; border-radius: 8px; margin-bottom: 18px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
         .section h2 { font-size: 18px; margin: 0 0 14px 0; color: #1a2a6c; border-left: 4px solid #1a2a6c; padding-left: 10px; }
         .section h3 { font-size: 15px; margin: 0 0 12px 0; color: #2c3e50; }
-        .scroll-x { overflow-x: auto; max-width: 100%; border: 1px solid #d0d7de; background: white; border-radius: 6px; }
+        .scroll-x { overflow-x: auto; overflow-y: hidden; max-width: 100%; border: 1px solid #d0d7de; background: white; border-radius: 6px; -webkit-overflow-scrolling: touch; }
         .scroll-x table { width: max-content; min-width: 100%; }
+        .scroll-x::-webkit-scrollbar { height: 12px; }
+        .scroll-x::-webkit-scrollbar-track { background: #eef1f6; border-radius: 6px; }
+        .scroll-x::-webkit-scrollbar-thumb { background: #1a2a6c; border-radius: 6px; }
+        .scroll-x::-webkit-scrollbar-thumb:hover { background: #253a7c; }
         .scroll-top { overflow-x: auto; overflow-y: hidden; max-height: 14px; margin-bottom: 4px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; box-sizing: border-box; }
         .scroll-top table { width: max-content; min-width: 100%; visibility: hidden; }
         .container { overflow: visible; }
@@ -330,11 +334,15 @@ BASE_HTML = """
         .scroll-sticky-wrap .scroll-x { border-radius: 6px; }
         /* 통합장부: 화면 내릴 때 스크롤 영역이 상단에 붙어서 따라오도록 sticky 유지 */
         .scroll-x-ledger { scroll-behavior: smooth; -webkit-overflow-scrolling: touch; }
-        /* 통합장부·정산관리: 가로 스크롤바 화면 하단 고정 (항상 보이게) */
-        .page-ledger { padding-bottom: 36px; }
-        .page-settlement { padding-bottom: 36px; }
-        .ledger-scrollbar-fix { position: fixed; bottom: 0; left: 0; right: 0; height: 28px; background: #f0f3f7; border-top: 2px solid #1a2a6c; z-index: 1000; overflow-x: auto; overflow-y: hidden; display: flex; align-items: center; }
-        .ledger-scrollbar-fix-inner { height: 1px; min-width: 100%; flex-shrink: 0; }
+        /* 통합장부·정산관리: 가로 스크롤바 화면 하단 고정 (항상 보이게, 잡기 쉽게) */
+        .page-ledger { padding-bottom: 44px; }
+        .page-settlement { padding-bottom: 44px; }
+        .ledger-scrollbar-fix { position: fixed; bottom: 0; left: 0; right: 0; height: 40px; background: #eef1f6; border-top: 2px solid #1a2a6c; z-index: 1000; overflow-x: auto; overflow-y: hidden; display: flex; align-items: center; box-shadow: 0 -2px 10px rgba(0,0,0,0.08); }
+        .ledger-scrollbar-fix-inner { height: 1px; min-width: 100%; flex-shrink: 0; pointer-events: none; }
+        .ledger-scrollbar-fix::-webkit-scrollbar { height: 16px; }
+        .ledger-scrollbar-fix::-webkit-scrollbar-track { background: #d0d7de; border-radius: 8px; margin: 0 8px; }
+        .ledger-scrollbar-fix::-webkit-scrollbar-thumb { background: #1a2a6c; border-radius: 8px; min-width: 60px; }
+        .ledger-scrollbar-fix::-webkit-scrollbar-thumb:hover { background: #253a7c; }
         table { border-collapse: collapse; width: 100%; white-space: nowrap; font-size: 12px; }
         th, td { border: 1px solid #dee2e6; padding: 6px 8px; text-align: center; }
         th { background: #f0f3f7; position: sticky; top: 0; z-index: 5; font-weight: 600; color: #374151; }
@@ -945,10 +953,10 @@ function loadLedgerList() {
         function syncLedgerScroll(sourceEl) {
             if (ledgerScrollSyncing) return;
             ledgerScrollSyncing = true;
-            const left = sourceEl.scrollLeft;
+            const left = Math.round(sourceEl.scrollLeft);
             ledgerScrollEls.forEach(id => {
                 const el = document.getElementById(id);
-                if (el && el !== sourceEl && el.scrollLeft !== left) el.scrollLeft = left;
+                if (el && el !== sourceEl && Math.round(el.scrollLeft) !== left) el.scrollLeft = left;
             });
             requestAnimationFrame(() => { ledgerScrollSyncing = false; });
         }
@@ -960,6 +968,7 @@ function loadLedgerList() {
             });
         }
         function updateLedgerScrollBarWidth() {
+            const bar = document.getElementById('ledgerScrollBarFix');
             const inner = document.getElementById('ledgerScrollBarFixInner');
             const formEl = document.getElementById('ledgerFormScroll');
             const listEl = document.getElementById('ledgerListScroll');
@@ -968,6 +977,7 @@ function loadLedgerList() {
             if (formEl && formEl.scrollWidth > w) w = formEl.scrollWidth;
             if (listEl && listEl.scrollWidth > w) w = listEl.scrollWidth;
             inner.style.width = (w || 100) + 'px';
+            if (bar && listEl) bar.scrollLeft = listEl.scrollLeft;
         }
         document.addEventListener('DOMContentLoaded', () => {
             bindLedgerScroll();
@@ -1358,11 +1368,10 @@ def settlement():
         function sync(src) {{
             if (syncing) return;
             syncing = true;
-            const left = src.scrollLeft;
-            if (topEl.scrollLeft !== left) topEl.scrollLeft = left;
-            if (mainEl.scrollLeft !== left) mainEl.scrollLeft = left;
-            if (botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left;
-            if (barEl && barEl.scrollLeft !== left) barEl.scrollLeft = left;
+            const left = Math.round(src.scrollLeft);
+            [topEl, mainEl, botEl, barEl].filter(Boolean).forEach(el => {{
+                if (Math.round(el.scrollLeft) !== left) el.scrollLeft = left;
+            }});
             requestAnimationFrame(() => {{ syncing = false; }});
         }}
         topEl.addEventListener('scroll', () => sync(topEl));
@@ -1425,6 +1434,7 @@ def statistics():
 
     df = pd.DataFrame(filtered_rows)
     summary_monthly = ""; summary_daily = ""
+    overview_table = ""
     full_settlement_client = ""; full_settlement_driver = ""
     q_client_enc = quote(q_client, safe='') if q_client else ''
     q_driver_enc = quote(q_driver, safe='') if q_driver else ''
@@ -1450,6 +1460,25 @@ def statistics():
         d_grp = df.groupby('order_dt').agg({'fee':'sum', 'vat1':'sum', 'total1':'sum', 'fee_out':'sum', 'vat2':'sum', 'total2':'sum', 'id':'count'}).sort_index(ascending=False).head(15)
         for date, v in d_grp.iterrows():
             summary_daily += f"<tr><td>{date}</td><td>{int(v['id'])}</td><td>{int(v['fee']):,}</td><td>{int(v['vat1']):,}</td><td>{int(v['total1']):,}</td><td>{int(v['fee_out']):,}</td><td>{int(v['vat2']):,}</td><td>{int(v['total2']):,}</td></tr>"
+
+        # 업체·기사별 한눈에 보기: 업체, 기사명, 노선, 오더일, 배차일, 업체운임, 기사운임 (오더일 내림차순)
+        df_overview = df.sort_values(by='order_dt', ascending=False).head(500)
+        for _, r in df_overview.iterrows():
+            def _esc(s):
+                s = (s or '').strip() or '-'
+                return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+            client = _esc(r.get('client_name'))
+            driver = _esc(r.get('d_name'))
+            route = _esc(r.get('route'))
+            order_dt = _esc(r.get('order_dt'))
+            dispatch_dt = (r.get('dispatch_dt') or '').strip() or '-'
+            if dispatch_dt != '-' and len(dispatch_dt) > 10:
+                dispatch_dt = dispatch_dt[:16].replace('T', ' ')
+            fee_val = int(r.get('fee', 0) or 0)
+            fee_out_val = int(r.get('fee_out', 0) or 0)
+            m_st = (r.get('m_st') or '').strip() or '-'
+            p_st = (r.get('p_st') or '').strip() or '-'
+            overview_table += f"<tr><td>{client}</td><td>{driver}</td><td>{route}</td><td>{order_dt}</td><td>{dispatch_dt}</td><td style='text-align:right;'>{fee_val:,}</td><td style='text-align:right;'>{fee_out_val:,}</td><td>{m_st}</td><td>{p_st}</td></tr>"
 
         # 업체 정산 데이터 조립: 업체별 "수신 [업체명] 정산서" 형식, 오더일|노선|공급가액|부가세|합계 (미수란 미표기, 오더일 오름차순)
         for client_name, grp in df.sort_values(by=['client_name', 'order_dt'], ascending=[True, True]).groupby('client_name'):
@@ -1536,6 +1565,12 @@ def statistics():
         <div class="summary-grid" style="margin-top:25px;">
             <div class="section"><h3>📅 월별 수익 요약</h3><div class="table-scroll"><table><thead><tr><th>연월</th><th>건수</th><th>공급가액</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th><th>수익</th></tr></thead><tbody>{summary_monthly}</tbody></table></div></div>
             <div class="section"><h3>📆 최근 일별 요약</h3><div class="table-scroll"><table><thead><tr><th>날짜</th><th>건수</th><th>공급가액</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th></tr></thead><tbody>{summary_daily}</tbody></table></div></div>
+        </div>
+
+        <div class="section" style="margin-top:20px;">
+            <h3>📋 업체·기사별 한눈에 보기</h3>
+            <p style="margin:0 0 10px 0; font-size:12px; color:#666;">업체, 기사명, 노선, 오더일, 배차일, 업체운임(공급가액), 기사운임, 수금상태, 지급상태 (최대 500건, 오더일 최신순)</p>
+            <div class="table-scroll" style="max-height:400px;"><table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr style="background:#f1f5f9;"><th style="padding:8px; border:1px solid #dee2e6;">업체</th><th style="padding:8px; border:1px solid #dee2e6;">기사명</th><th style="padding:8px; border:1px solid #dee2e6;">노선</th><th style="padding:8px; border:1px solid #dee2e6;">오더일</th><th style="padding:8px; border:1px solid #dee2e6;">배차일</th><th style="padding:8px; border:1px solid #dee2e6;">업체운임</th><th style="padding:8px; border:1px solid #dee2e6;">기사운임</th><th style="padding:8px; border:1px solid #dee2e6;">수금상태</th><th style="padding:8px; border:1px solid #dee2e6;">지급상태</th></tr></thead><tbody>{overview_table}</tbody></table></div>
         </div>
 
         <div style="margin-top:30px;">
