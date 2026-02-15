@@ -25,8 +25,8 @@ def now_kst():
     return datetime.now(KST)
 
 def calc_supply_value(r):
-    """공급가액 = 수수료 + 선착불 + 업체운임"""
-    return float(r.get('fee') or 0) + float(r.get('comm') or 0) + float(r.get('pre_post') or 0)
+    """공급가액 = 수수료 + 선착불 + 업체운임 (잘못된 값은 0으로 처리)"""
+    return safe_float(r.get('fee')) + safe_float(r.get('comm')) + safe_float(r.get('pre_post'))
 
 def calc_fee_total(r):
     """공급가액 (하위호환용, calc_supply_value와 동일)"""
@@ -38,7 +38,7 @@ def calc_totals_with_vat(r):
     is_cash_client = (str(r.get('pay_method_client') or '').strip() == '현금')
     vat1 = 0 if is_cash_client else int(round(supply_val * 0.1))
     total1 = supply_val + vat1
-    fee_out = int(float(r.get('fee_out') or 0))
+    fee_out = int(safe_float(r.get('fee_out')))
     is_cash_driver = (str(r.get('pay_method_driver') or '').strip() == '현금')
     vat2 = 0 if is_cash_driver else int(round(fee_out * 0.1))
     total2 = fee_out + vat2
@@ -46,7 +46,7 @@ def calc_totals_with_vat(r):
 
 def calc_vat_auto(data):
     """부가세·합계 자동계산. 공급가액=수수료+선착불+업체운임, 부가세=공급가액*0.1, 합계=공급가액+부가세. 현금건이면 부가세=0"""
-    def _f(k): return float(data.get(k) or 0)
+    def _f(k): return safe_float(data.get(k))
     supply_val = calc_supply_value(data)
     is_cash_client = (str(data.get('pay_method_client') or '').strip() == '현금')
     data['sup_val'] = str(int(supply_val)) if supply_val != 0 else ''
@@ -76,6 +76,15 @@ def safe_int(val, default=1):
     """사용자 입력을 안전하게 정수로 변환 (잘못된 입력 시 default 반환)"""
     try:
         return int(val) if val is not None and str(val).strip() else default
+    except (ValueError, TypeError):
+        return default
+
+def safe_float(val, default=0.0):
+    """사용자 입력을 안전하게 실수로 변환 (잘못된 입력 시 default 반환)"""
+    try:
+        if val is None or (isinstance(val, str) and not str(val).strip()):
+            return default
+        return float(val)
     except (ValueError, TypeError):
         return default
 
@@ -1052,10 +1061,10 @@ def index():
             <div class="quick-order-grid">
                 <div><label>업체명</label><input type="text" name="q_client_name" id="q_client_name" class="client-search" placeholder="초성(예:ㅇㅅㅁ)" autocomplete="off"></div>
                 <div><label>노선</label><input type="text" name="q_route" id="q_route"></div>
-                <div><label>업체운임</label><input type="text" inputmode="decimal" pattern="^-?[0-9]*\.?[0-9]*$" title="숫자만 입력" name="q_fee" id="q_fee" oninput="this.value=this.value.replace(/[^0-9.-]/g,'').replace(/(\..*)\./g,'$1')"></div>
+                <div><label>업체운임</label><input type="text" inputmode="decimal" pattern="^-?[0-9]*\\.?[0-9]*$" title="숫자만 입력" name="q_fee" id="q_fee" oninput="this.value=this.value.replace(/[^0-9.-]/g,'').replace(/(\\..*)\\./g,'$1')"></div>
                 <div><label>기사명</label><input type="text" name="q_d_name" id="q_d_name" class="driver-search" placeholder="기사초성" autocomplete="off"></div>
                 <div><label>차량번호</label><input type="text" name="q_c_num" id="q_c_num" class="driver-search" autocomplete="off"></div>
-                <div><label>기사운임</label><input type="text" inputmode="decimal" pattern="^-?[0-9]*\.?[0-9]*$" title="숫자만 입력" name="q_fee_out" id="q_fee_out" oninput="this.value=this.value.replace(/[^0-9.-]/g,'').replace(/(\..*)\./g,'$1')"></div>
+                <div><label>기사운임</label><input type="text" inputmode="decimal" pattern="^-?[0-9]*\\.?[0-9]*$" title="숫자만 입력" name="q_fee_out" id="q_fee_out" oninput="this.value=this.value.replace(/[^0-9.-]/g,'').replace(/(\\..*)\\./g,'$1')"></div>
             </div>
             <div style="text-align:right;"><button type="button" class="btn-save" style="background:#e67e22;" onclick="saveLedger('quickOrderForm')">장부 즉시 등록</button></div>
         </form>
@@ -1941,11 +1950,8 @@ def export_stats():
 def upload_evidence(ledger_id):
     """기사가 링크로 접속해 계산서/운송장 사진 업로드 (로그인 불필요)"""
     target_type = request.args.get('type', 'all')
-    try:
-        seq_val = int(request.args.get('seq', 1) or 1)
-        target_seq = str(max(1, min(5, seq_val)))
-    except (ValueError, TypeError):
-        target_seq = '1'
+    seq_val = safe_int(request.args.get('seq'), 1)
+    target_seq = str(max(1, min(5, seq_val)))
     if request.method == 'POST':
         tax_file, ship_file = request.files.get('tax_file'), request.files.get('ship_file')
         conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
@@ -2030,7 +2036,7 @@ def sanitize_ledger_value(k, v):
 @app.route('/api/save_ledger', methods=['POST'])
 @login_required 
 def save_ledger_api():
-    raw = request.json or {}
+    raw = request.get_json(silent=True) or {}
     if not isinstance(raw, dict):
         return jsonify({"status": "error", "message": "invalid request"}), 400
     keys = [c['k'] for c in FULL_COLUMNS]
@@ -2042,11 +2048,8 @@ def save_ledger_api():
     
     keys = [c['k'] for c in FULL_COLUMNS]
     if 'id' in data and data['id']:
-        try:
-            target_id = int(data['id'])
-            if target_id <= 0:
-                return jsonify({"status": "error", "message": "invalid id"}), 400
-        except (ValueError, TypeError):
+        target_id = safe_int(data.get('id'), 0)
+        if target_id <= 0:
             return jsonify({"status": "error", "message": "invalid id"}), 400
         action_type = "수정"
         sql = ", ".join([f"'{k}' = ?" for k in keys])
@@ -2235,15 +2238,12 @@ ALLOWED_STATUS_KEYS = {c['k'] for c in FULL_COLUMNS}
 @app.route('/api/update_status', methods=['POST'])
 @login_required 
 def update_status():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     key = data.get('key')
     if key not in ALLOWED_STATUS_KEYS:
         return jsonify({"status": "error", "message": "invalid key"}), 400
-    try:
-        row_id = int(data.get('id', 0))
-        if row_id <= 0:
-            return jsonify({"status": "error", "message": "invalid id"}), 400
-    except (ValueError, TypeError):
+    row_id = safe_int(data.get('id'), 0)
+    if row_id <= 0:
         return jsonify({"status": "error", "message": "invalid id"}), 400
     conn = sqlite3.connect('ledger.db')
     conn.row_factory = sqlite3.Row
@@ -2331,7 +2331,7 @@ def api_delete_client(row_id):
 @app.route('/api/update_client/<int:row_id>', methods=['POST'])
 @login_required
 def api_update_client(row_id):
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     conn = sqlite3.connect('ledger.db')
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(clients)")
@@ -2828,7 +2828,7 @@ def arrival():
 @app.route('/api/arrival/add', methods=['POST'])
 @login_required
 def arrival_add():
-    d = request.json or {}
+    d = request.get_json(silent=True) or {}
     target_time = d.get('target_time') or None
     content = d.get('content') or ''
     content_important = d.get('content_important') or ''
@@ -2847,12 +2847,9 @@ def arrival_add():
 @app.route('/api/arrival/update', methods=['POST'])
 @login_required
 def arrival_update():
-    d = request.json or {}
-    try:
-        nid = int(d.get('id', 0))
-        if nid <= 0:
-            return jsonify({"status": "error", "message": "invalid id"}), 400
-    except (ValueError, TypeError):
+    d = request.get_json(silent=True) or {}
+    nid = safe_int(d.get('id'), 0)
+    if nid <= 0:
         return jsonify({"status": "error", "message": "invalid id"}), 400
     conn = sqlite3.connect('ledger.db')
     cursor = conn.cursor()
@@ -3006,7 +3003,7 @@ def api_delete_driver(driver_id):
 @app.route('/api/update_driver/<int:driver_id>', methods=['POST'])
 @login_required
 def api_update_driver(driver_id):
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     conn = sqlite3.connect('ledger.db')
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(drivers)")
