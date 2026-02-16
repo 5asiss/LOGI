@@ -160,19 +160,20 @@ FULL_COLUMNS = [
     {"n": "노선", "k": "route"}, {"n": "기사명", "k": "d_name", "c": "driver-search"},
     {"n": "차량번호", "k": "c_num", "c": "driver-search"}, {"n": "검색용", "k": "search_num"},
     {"n": "연락처", "k": "d_phone", "c": "driver-search"}, {"n": "비고", "k": "memo2"},
-    {"n": "결제처", "k": "pay_to"}, {"n": "업체명", "k": "client_name", "c": "client-search"},
+    {"n": "사업자구분", "k": "pay_to"}, {"n": "업체명", "k": "client_name", "c": "client-search"},
     {"n": "담당자연락처", "k": "c_mgr_phone"}, {"n": "담당자", "k": "c_mgr_name"},
     {"n": "연락처", "k": "c_phone"}, {"n": "사업자번호", "k": "biz_num"},
     {"n": "사업장주소", "k": "biz_addr"}, {"n": "업종", "k": "biz_type1"},
     {"n": "업태", "k": "biz_type2"}, {"n": "메일주소", "k": "mail"},
     {"n": "도메인", "k": "domain"}, {"n": "사업자", "k": "biz_owner"},
+    {"n": "발행구분", "k": "biz_issue"}, {"n": "업체비고", "k": "client_memo"},
     {"n": "결제참고사항", "k": "pay_memo"}, {"n": "결제예정일", "k": "pay_due_dt", "t": "date"},
-    {"n": "장부이동내역", "k": "log_move"},     {"n": "입금일", "k": "in_dt", "t": "date"},
+    {"n": "개인/고정", "k": "log_move"},     {"n": "입금일", "k": "in_dt", "t": "date"},
     {"n": "업체 현금확인", "k": "pay_method_client", "t": "text"},
     {"n": "수수료", "k": "comm", "t": "number"}, {"n": "선착불", "k": "pre_post"},
     {"n": "업체운임", "k": "fee", "t": "number"}, {"n": "공급가액", "k": "sup_val", "t": "number"},
     {"n": "부가세", "k": "vat1", "t": "number"}, {"n": "합계", "k": "total1", "t": "number"},
-    {"n": "입금자명", "k": "in_name"}, {"n": "월구분", "k": "month_val"},
+    {"n": "입금자명", "k": "in_name"}, {"n": "입금내역", "k": "month_val"},
     {"n": "계산서발행일", "k": "tax_dt", "t": "date"}, {"n": "발행사업자", "k": "tax_biz"},
     {"n": "폰", "k": "tax_phone"}, {"n": "계좌번호", "k": "bank_acc"},
     {"n": "연락처", "k": "tax_contact"}, {"n": "사업자번호", "k": "tax_biz_num"},
@@ -196,13 +197,35 @@ FULL_COLUMNS = [
 DRIVER_COLS = ["기사명", "차량번호", "연락처", "계좌번호", "사업자번호", "사업자", "개인/고정", "메모"]
 CLIENT_COLS = ["사업자구분", "업체명", "발행구분", "사업자등록번호", "대표자명", "사업자주소", "업태", "종목", "메일주소", "담당자", "연락처", "결제특이사항", "비고"]
 # 통합장부 - 기사 관련 컬럼 (연한 빨강 배경)
-COL_KEYS_DRIVER = {'d_name', 'c_num', 'search_num', 'd_phone', 'memo2', 'bank_acc', 'tax_phone', 'tax_contact', 'tax_biz_num', 'tax_biz_name', 'out_dt', 'pay_method_driver', 'fee_out', 'vat2', 'total2', 'write_dt', 'issue_dt', 'tax_chk', 'tax_biz2', 'tax_img', 'ship_img', 'd_bank_name', 'd_bank_owner'}
+COL_KEYS_DRIVER = {'d_name', 'c_num', 'search_num', 'd_phone', 'memo2', 'bank_acc', 'tax_phone', 'tax_contact', 'tax_biz_num', 'tax_biz_name', 'out_dt', 'pay_method_driver', 'fee_out', 'vat2', 'total2', 'write_dt', 'issue_dt', 'tax_chk', 'tax_biz2', 'tax_img', 'ship_img', 'd_bank_name', 'd_bank_owner', 'log_move'}
 # 통합장부 - 업체 관련 컬럼 (파랑 배경)
-COL_KEYS_CLIENT = {'pay_to', 'client_name', 'c_mgr_phone', 'c_mgr_name', 'c_phone', 'biz_num', 'biz_addr', 'biz_type1', 'biz_type2', 'mail', 'domain', 'biz_owner', 'pay_memo', 'pay_due_dt', 'in_dt', 'pay_method_client', 'comm', 'pre_post', 'fee', 'sup_val', 'vat1', 'total1', 'in_name', 'month_val', 'tax_dt', 'tax_biz'}
+COL_KEYS_CLIENT = {'pay_to', 'client_name', 'c_mgr_phone', 'c_mgr_name', 'c_phone', 'biz_num', 'biz_addr', 'biz_type1', 'biz_type2', 'mail', 'domain', 'biz_owner', 'biz_issue', 'client_memo', 'pay_memo', 'pay_due_dt', 'in_dt', 'pay_method_client', 'comm', 'pre_post', 'fee', 'sup_val', 'vat1', 'total1', 'in_name', 'month_val', 'tax_dt', 'tax_biz'}
 # 공급가액·부가세·합계 자동계산 필드 (입력 불가)
 CALC_READONLY_KEYS = {'sup_val', 'vat1', 'total1', 'vat2', 'total2', 'net_profit', 'vat_final'}
 # 순수입·부가세: 사용 안 함, 회색 처리
 UNUSED_GRAY_KEYS = {'net_profit', 'vat_final'}
+
+# 통합장부 엑셀 업로드: 첫 열 "관리" 제외, 나머지 열 순서대로 매핑할 키
+LEDGER_EXCEL_HEADERS = [
+    "관리", "비고", "요청내용", "구분", "우편/문자/팩스 발송 주소,연락처", "완료", "추가요청사항", "완료",
+    "오더일", "배차일", "노선", "기사명", "차량번호", "검색용", "연락처", "비고", "사업자구분", "업체명",
+    "담당자연락처", "담당자", "연락처", "사업자번호", "사업장주소", "업종", "업태", "메일주소", "도메인", "사업자",
+    "발행구분", "업체비고", "결제참고사항", "결제예정일", "개인/고정", "입금일", "업체 현금확인", "수수료", "선착불", "업체운임",
+    "공급가액", "부가세", "합계", "입금자명", "입금내역", "계산서발행일", "발행사업자", "폰", "계좌번호", "연락처",
+    "사업자번호", "사업자", "지급일", "기사 현금확인", "기사운임", "부가세", "합계", "작성일자", "발행일", "계산서확인",
+    "발행사업자", "순수입", "부가세", "계산서사진", "운송장사진", "기사은행명", "기사예금주", "운송우편확인", "우편확인일",
+    "업체 월말합산", "기사 월말합산"
+]
+LEDGER_EXCEL_KEYS = [
+    None, "memo1", "req_type", "category", "send_to", "is_done1", "req_add", "is_done2",
+    "order_dt", "dispatch_dt", "route", "d_name", "c_num", "search_num", "d_phone", "memo2",
+    "pay_to", "client_name", "c_mgr_phone", "c_mgr_name", "c_phone", "biz_num", "biz_addr", "biz_type1", "biz_type2",
+    "mail", "domain", "biz_owner", "biz_issue", "client_memo", "pay_memo", "pay_due_dt", "log_move", "in_dt", "pay_method_client",
+    "comm", "pre_post", "fee", "sup_val", "vat1", "total1", "in_name", "month_val", "tax_dt", "tax_biz",
+    "tax_phone", "bank_acc", "tax_contact", "tax_biz_num", "tax_biz_name", "out_dt", "pay_method_driver", "fee_out", "vat2", "total2",
+    "write_dt", "issue_dt", "tax_chk", "tax_biz2", "net_profit", "vat_final", "tax_img", "ship_img", "d_bank_name", "d_bank_owner",
+    "is_mail_done", "mail_dt", "month_end_client", "month_end_driver"
+]
 
 def ledger_col_class(k):
     """컬럼별 배경 클래스: 기사=연한빨강, 업체=파랑, 미사용=회색"""
@@ -235,8 +258,12 @@ def ledger_input_attrs(c):
     return f"type='text' {base}"
 
 def init_db():
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+    except Exception:
+        pass
 
     keys = [c['k'] for c in FULL_COLUMNS]
     cols_sql = ", ".join([f"'{k}' TEXT" for k in keys])
@@ -258,7 +285,21 @@ def init_db():
             '은행명' TEXT, '예금주' TEXT
         )
     """)
-    # (이하 생략 - 기존 activity_logs, clients 유지)
+    # 업체(clients) 테이블: 없으면 CLIENT_COLS로 생성, 있으면 누락 컬럼 추가
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='clients'")
+    if cursor.fetchone():
+        cursor.execute("PRAGMA table_info(clients)")
+        existing_client_cols = [r[1] for r in cursor.fetchall()]
+        for col in CLIENT_COLS:
+            if col not in existing_client_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE clients ADD COLUMN [{col}] TEXT")
+                except Exception:
+                    pass
+    else:
+        cols_clients = ", ".join([f"[{c}] TEXT" for c in CLIENT_COLS])
+        cursor.execute(f"CREATE TABLE clients ({cols_clients})")
+
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS activity_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -296,12 +337,21 @@ drivers_db = []; clients_db = []
 
 def load_db_to_mem():
     global drivers_db, clients_db
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     drivers_db = pd.read_sql("SELECT * FROM drivers", conn).fillna('').to_dict('records')
     clients_db = pd.read_sql("SELECT * FROM clients", conn).fillna('').to_dict('records')
     conn.close()
 
 load_db_to_mem()
+
+def get_driver_fixed_type(drivers_list, d_name, c_num):
+    """기사명·차량번호에 해당하는 기사의 개인/고정 값을 반환 (기사관리와 연동)"""
+    d_name_s = str(d_name or '').strip()
+    c_num_s = str(c_num or '').strip()
+    for d in drivers_list:
+        if str(d.get('기사명', '')).strip() == d_name_s and str(d.get('차량번호', '')).strip() == c_num_s:
+            return str(d.get('개인/고정', '')).strip()
+    return None
 
 BASE_HTML = """
 <!DOCTYPE html>
@@ -369,6 +419,7 @@ BASE_HTML = """
         /* 검색 팝업 스타일 강화 (눈에 띄게 수정) */
         .search-results { 
             position: absolute; 
+            z-index: 10001;
             background-color: white !important; 
             border: 2px solid #1a2a6c !important; 
             z-index: 999999 !important; /* 최상단 배치 */
@@ -388,6 +439,8 @@ BASE_HTML = """
             background: white;
         }
         .search-item:hover { background-color: #ebf2ff; color: #1a2a6c; font-weight: bold; }
+        .search-item:active { background-color: #c5d9ff; }
+        .search-item { user-select: none; -webkit-user-select: none; }
         
         .quick-order-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 14px; }
         .quick-order-grid label { display: block; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 4px; }
@@ -483,13 +536,33 @@ BASE_HTML = """
         return res;
     };
 
-    // 2. 실시간 입력 감지 및 팝업 표시 (좌표 계산 및 데이터 전달 수정)
+    // 검색 팝업 닫기 지연 타이머 (blur 시 클릭이 먼저 처리되도록)
+    let searchPopupCloseTimer = null;
+    document.getElementById('search-popup').addEventListener('mousedown', function(ev) {
+        const item = ev.target.closest('.search-item');
+        if (!item) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const idx = parseInt(item.getAttribute('data-index'), 10);
+        const list = window._searchList;
+        const targetId = this.getAttribute('data-search-target-id') || '';
+        const type = this.getAttribute('data-search-type') || 'client';
+        if (list && list[idx] != null && targetId && type) {
+            fillData(JSON.stringify(list[idx]), type, targetId);
+        }
+        this.style.display = 'none';
+        if (searchPopupCloseTimer) clearTimeout(searchPopupCloseTimer);
+        searchPopupCloseTimer = null;
+    });
+
+    // 2. 실시간 입력 감지 및 팝업 표시 (이벤트 위임 + data-index로 클릭 안정화)
     document.addEventListener('input', function(e) {
         const vatSrc = ['comm','pre_post','fee','fee_out','pay_method_client','pay_method_driver'];
         if (e.target.form?.id === 'ledgerForm' && vatSrc.includes(e.target.name)) {
             if (typeof calcVatAutoForm === 'function') calcVatAutoForm();
         }
         if(e.target.classList.contains('driver-search') || e.target.classList.contains('client-search')) {
+            if (searchPopupCloseTimer) { clearTimeout(searchPopupCloseTimer); searchPopupCloseTimer = null; }
             const isDriver = e.target.classList.contains('driver-search');
             const val = e.target.value.toLowerCase().trim();
             const db = isDriver ? drivers : clients;
@@ -504,20 +577,33 @@ BASE_HTML = """
             });
 
             if(filtered.length > 0) {
+                window._searchList = filtered;
+                popup.setAttribute('data-search-target-id', e.target.id);
+                popup.setAttribute('data-search-type', isDriver ? 'driver' : 'client');
                 const rect = e.target.getBoundingClientRect();
                 popup.style.display = 'block'; 
-                popup.style.width = rect.width + 'px';
-                // 좌표 보정: 스크롤 위치를 포함하여 입력창 바로 아래에 배치
+                popup.style.width = Math.max(rect.width, 220) + 'px';
                 popup.style.top = (window.scrollY + rect.bottom) + 'px'; 
                 popup.style.left = (window.scrollX + rect.left) + 'px'; 
-                
-                popup.innerHTML = filtered.map(item => {
-                    const label = isDriver ? `${item.기사명} [${item.차량번호 || ''}]` : (item.업체명 || '');
-                    // 중요: 데이터를 안전하게 문자열화 (따옴표 오류 방지)
-                    const itemData = JSON.stringify(item).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                    return `<div class="search-item" onclick="fillData('${itemData}', '${isDriver ? 'driver' : 'client'}', '${e.target.id}')">${label}</div>`;
+                popup.innerHTML = filtered.map((item, idx) => {
+                    const label = isDriver ? `${item.기사명 || ''} [${item.차량번호 || ''}]` : (item.업체명 || '');
+                    const safeLabel = (label || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                    return `<div class="search-item" data-index="${idx}">${safeLabel}</div>`;
                 }).join('');
             } else { popup.style.display = 'none'; }
+        }
+    });
+
+    document.addEventListener('focusin', function(e) {
+        if (e.target.classList && (e.target.classList.contains('driver-search') || e.target.classList.contains('client-search')))
+            if (searchPopupCloseTimer) { clearTimeout(searchPopupCloseTimer); searchPopupCloseTimer = null; }
+    });
+    document.addEventListener('focusout', function(e) {
+        if (e.target.classList && (e.target.classList.contains('driver-search') || e.target.classList.contains('client-search'))) {
+            searchPopupCloseTimer = setTimeout(function() {
+                document.getElementById('search-popup').style.display = 'none';
+                searchPopupCloseTimer = null;
+            }, 180);
         }
     });
 
@@ -534,21 +620,34 @@ BASE_HTML = """
             if(nameField) nameField.value = item.기사명 || '';
             if(numField) numField.value = item.차량번호 || '';
 
-            if(!isQuick) { // 상세 장부 입력창일 때만 추가 정보 자동 기입
+            if(!isQuick) { // 상세 장부: 기사관리 10개 항목 전체(기사명·차량번호·연락처·은행명·계좌번호·예금주·사업자번호·사업자·개인고정·메모) 불러와 기입
                 if(document.getElementById('d_phone')) document.getElementById('d_phone').value = item.연락처 || '';
-                if(document.getElementById('bank_acc')) document.getElementById('bank_acc').value = item.계좌번호 || '';
                 if(document.getElementById('d_bank_name')) document.getElementById('d_bank_name').value = item.은행명 || '';
-                if(document.getElementById('d_bank_owner')) document.getElementById('d_bank_owner').value = item.예금주 || item.사업자 || '';
+                if(document.getElementById('bank_acc')) document.getElementById('bank_acc').value = item.계좌번호 || '';
+                if(document.getElementById('d_bank_owner')) document.getElementById('d_bank_owner').value = item.예금주 || '';
+                if(document.getElementById('tax_biz_num')) document.getElementById('tax_biz_num').value = item.사업자번호 || '';
+                if(document.getElementById('tax_biz_name')) document.getElementById('tax_biz_name').value = item.사업자 || '';
+                if(document.getElementById('log_move')) document.getElementById('log_move').value = item['개인/고정'] || '';
+                if(document.getElementById('memo1')) document.getElementById('memo1').value = item.메모 || '';
             }
         } else {
             const clientField = document.getElementById(prefix + 'client_name');
             if(clientField) clientField.value = item.업체명 || '';
 
-            if(!isQuick) { // 상세 장부 입력창일 때만 추가 정보 자동 기입
+            if(!isQuick) { // 상세 장부 입력창: 업체관리 탭 전부(사업자구분~비고) 불러와 기입
+                if(document.getElementById('pay_to')) document.getElementById('pay_to').value = item.사업자구분 || '';
+                if(document.getElementById('c_mgr_phone')) document.getElementById('c_mgr_phone').value = item.연락처 || '';
+                if(document.getElementById('c_mgr_name')) document.getElementById('c_mgr_name').value = item.담당자 || '';
                 if(document.getElementById('c_phone')) document.getElementById('c_phone').value = item.연락처 || '';
                 if(document.getElementById('biz_num')) document.getElementById('biz_num').value = item.사업자등록번호 || '';
                 if(document.getElementById('biz_addr')) document.getElementById('biz_addr').value = item.사업자주소 || '';
+                if(document.getElementById('biz_type1')) document.getElementById('biz_type1').value = item.종목 || '';
+                if(document.getElementById('biz_type2')) document.getElementById('biz_type2').value = item.업태 || '';
+                if(document.getElementById('mail')) document.getElementById('mail').value = item.메일주소 || '';
                 if(document.getElementById('biz_owner')) document.getElementById('biz_owner').value = item.대표자명 || '';
+                if(document.getElementById('biz_issue')) document.getElementById('biz_issue').value = item.발행구분 || '';
+                if(document.getElementById('client_memo')) document.getElementById('client_memo').value = item.비고 || '';
+                if(document.getElementById('pay_memo')) document.getElementById('pay_memo').value = item.결제특이사항 || '';
             }
         }
         document.getElementById('search-popup').style.display = 'none';
@@ -614,8 +713,15 @@ BASE_HTML = """
             return true;
         }
 
+        var lastOrderSaveTime = 0;
         function saveLedger(formId) {
             if (!validateLedgerForm(formId)) return;
+            var now = Date.now();
+            if (now - lastOrderSaveTime < 2000) {
+                alert('오더 생성은 2초에 한 번만 가능합니다.');
+                return;
+            }
+            lastOrderSaveTime = now;
             const form = document.getElementById(formId);
             const formData = new FormData(form);
             const data = {};
@@ -629,15 +735,20 @@ BASE_HTML = """
                 } else data[key] = v;
             });
             if(isQuick) {
+                // 빠른오더: 업체명·기사명 초성검색과 동일하게 등록 — 선택한 업체/기사 전체 데이터 보내서 장부·업체관리/기사관리 동기화
                 const client = clients.find(c => c.업체명 === data.client_name);
                 if(client) {
-                    data.c_phone = client.연락처 || ''; data.biz_num = client.사업자등록번호 || ''; 
-                    data.biz_addr = client.사업자주소 || ''; data.biz_owner = client.대표자명 || '';
+                    data.pay_to = client.사업자구분 || ''; data.biz_issue = client.발행구분 || '';
+                    data.biz_num = client.사업자등록번호 || ''; data.biz_owner = client.대표자명 || '';
+                    data.biz_addr = client.사업자주소 || ''; data.biz_type2 = client.업태 || ''; data.biz_type1 = client.종목 || '';
+                    data.mail = client.메일주소 || ''; data.c_mgr_name = client.담당자 || ''; data.c_phone = client.연락처 || '';
+                    data.pay_memo = client.결제특이사항 || ''; data.client_memo = client.비고 || '';
                 }
                 const driver = drivers.find(d => d.기사명 === data.d_name && d.차량번호 === data.c_num);
                 if(driver) {
-                    data.d_phone = driver.연락처 || ''; data.bank_acc = driver.계좌번호 || ''; 
-                    data.tax_biz_num = driver.사업자번호 || ''; data.tax_biz_name = driver.사업자 || '';
+                    data.d_phone = driver.연락처 || ''; data.d_bank_name = driver.은행명 || ''; data.bank_acc = driver.계좌번호 || '';
+                    data.d_bank_owner = driver.예금주 || ''; data.tax_biz_num = driver.사업자번호 || ''; data.tax_biz_name = driver.사업자 || '';
+                    data.log_move = driver['개인/고정'] || ''; data.memo1 = driver.메모 || '';
                 }
                 data.order_dt = data.order_dt || (typeof todayKST === 'function' ? todayKST() : new Date().toISOString().split('T')[0]);
                 data.dispatch_dt = data.dispatch_dt || (typeof nowKSTLocal === 'function' ? nowKSTLocal() : new Date().toISOString().slice(0,16));
@@ -1157,7 +1268,7 @@ def index():
 @app.route('/settlement')
 @login_required 
 def settlement():
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     # 시작일, 종료일 검색 값을 URL에서 가져옵니다.
     q_status = request.args.get('status', ''); q_name = request.args.get('name', '')
     q_start = request.args.get('start', ''); q_end = request.args.get('end', '')
@@ -1286,8 +1397,8 @@ def settlement():
         me_c = (str(row.get('month_end_client') or '').strip() in ('1', 'Y'))
         me_d = (str(row.get('month_end_driver') or '').strip() in ('1', 'Y'))
         rid = row['id']
-        month_end_client_cell = f'<td style="text-align:center;"><input type="checkbox" {"checked" if me_c else ""} onchange="fetch(\'/api/update_status\', {{method:\'POST\', headers:{{\'Content-Type\':\'application/json\'}}, body: JSON.stringify({{id:{rid}, key:\'month_end_client\', value: this.checked ? \'1\' : \'\'}})}}).then(r=>r.json()).then(res=>{{if(res.status===\'success\') location.reload(); else alert(res.message||\'반영 실패\');}});"></td>'
-        month_end_driver_cell = f'<td style="text-align:center;"><input type="checkbox" {"checked" if me_d else ""} onchange="fetch(\'/api/update_status\', {{method:\'POST\', headers:{{\'Content-Type\':\'application/json\'}}, body: JSON.stringify({{id:{rid}, key:\'month_end_driver\', value: this.checked ? \'1\' : \'\'}})}}).then(r=>r.json()).then(res=>{{if(res.status===\'success\') location.reload(); else alert(res.message||\'반영 실패\');}});"></td>'
+        month_end_client_cell = f'<input type="checkbox" {"checked" if me_c else ""} onchange="fetch(\'/api/update_status\', {{method:\'POST\', headers:{{\'Content-Type\':\'application/json\'}}, body: JSON.stringify({{id:{rid}, key:\'month_end_client\', value: this.checked ? \'1\' : \'\'}})}}).then(r=>r.json()).then(res=>{{if(res.status===\'success\') location.reload(); else alert(res.message||\'반영 실패\');}});">'
+        month_end_driver_cell = f'<input type="checkbox" {"checked" if me_d else ""} onchange="fetch(\'/api/update_status\', {{method:\'POST\', headers:{{\'Content-Type\':\'application/json\'}}, body: JSON.stringify({{id:{rid}, key:\'month_end_driver\', value: this.checked ? \'1\' : \'\'}})}}).then(r=>r.json()).then(res=>{{if(res.status===\'success\') location.reload(); else alert(res.message||\'반영 실패\');}});">'
 
         def make_direct_links(ledger_id, img_type, raw_paths):
             paths = [p.strip() for p in (raw_paths or "").split(',')] if raw_paths else []
@@ -1312,7 +1423,7 @@ def settlement():
                 <a href="/?edit_id={row['id']}" class="btn-edit" style="display:inline-block; margin-right:4px; text-decoration:none;">장부입력</a>
                 <button class="btn-log" onclick="viewOrderLog({row['id']})" style="background:#6c757d; color:white; border:none; padding:2px 5px; cursor:pointer; font-size:11px; border-radius:3px;">로그</button>
             </td>
-            <td>{row['client_name']}</td><td>{tax_cell}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{issue_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td><td>{month_end_client_cell}</td><td>{month_end_driver_cell}</td></tr>"""
+            <td>{row['client_name']}</td><td>{tax_cell}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{issue_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td><td style="text-align:center;">{month_end_client_cell}</td><td style="text-align:center;">{month_end_driver_cell}</td></tr>"""
     
     pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&start={q_start}&end={q_end}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
 
@@ -1411,7 +1522,7 @@ def settlement():
 @app.route('/statistics')
 @login_required 
 def statistics():
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     # 1. 모든 필터 파라미터 정의
     q_start = request.args.get('start', '')
     q_end = request.args.get('end', '')
@@ -1521,6 +1632,64 @@ def statistics():
             full_settlement_driver += f"<tr class='client-sum-row'><td colspan='2'>합계</td><td style='text-align:right; font-weight:bold;'>{grp_sum:,}</td><td style='text-align:right; font-weight:bold;'>{grp_vat:,}</td><td style='text-align:right; font-weight:bold;'>{grp_total:,}</td></tr></tbody></table></div>"
         full_settlement_driver += "</div>"
 
+    # 이체확인 테이블: 오더일 기준 오름차순(최근 아래), 운임별 정렬·소계
+    stats_transfer_table = ""
+    if not df.empty:
+        df_sorted = df.sort_values(by=['order_dt', 'total1'], ascending=[True, True])
+        sum_total1 = int(df_sorted['total1'].sum())
+        sum_total2 = int(df_sorted['total2'].sum())
+        def _esc(s):
+            if s is None or (isinstance(s, float) and pd.isna(s)): return ''
+            s = str(s).strip()
+            return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+        rows_html = ""
+        grp_t1 = 0
+        grp_t2 = 0
+        prev_total1 = None
+        for _, r in df_sorted.iterrows():
+            total1_val = int(r.get('total1', 0))
+            if prev_total1 is not None and prev_total1 != total1_val and (grp_t1 or grp_t2):
+                rows_html += f"<tr style='background:#e8f0e8; font-weight:bold;'><td colspan='2'>운임별 소계</td><td style='text-align:right;'>{grp_t1:,}</td><td style='text-align:right;'>{grp_t2:,}</td><td colspan='9'></td></tr>"
+                grp_t1 = 0
+                grp_t2 = 0
+            prev_total1 = total1_val
+            order_dt = _esc(r.get('order_dt'))
+            dispatch_dt = _esc(r.get('dispatch_dt'))
+            m_st = _esc(r.get('m_st', ''))
+            in_dt = _esc(r.get('in_dt', ''))
+            p_st = _esc(r.get('p_st', ''))
+            out_dt = _esc(r.get('out_dt', ''))
+            total2_val = int(r.get('total2', 0))
+            in_name = _esc(r.get('in_name', ''))
+            month_val = _esc(r.get('month_val', ''))
+            route = _esc(r.get('route', ''))
+            d_name = _esc(r.get('d_name', ''))
+            c_num = _esc(r.get('c_num', ''))
+            d_phone = _esc(r.get('d_phone', ''))
+            tax_biz_name = _esc(r.get('tax_biz_name', ''))
+            memo_parts = [_esc(r.get('memo1', '')), _esc(r.get('memo2', '')), _esc(r.get('req_add', ''))]
+            memo_str = ' / '.join(p for p in memo_parts if p)
+            cell_misu = f"<div style='text-align:right;'><span style='font-size:10px; color:#666;'>수금상태: {m_st}</span><br><span style='font-size:10px; color:#666;'>변경일: {in_dt or '-'}</span><br><strong>{total1_val:,}</strong></div>"
+            cell_pay = f"<div style='text-align:right;'><span style='font-size:10px; color:#666;'>지급상태: {p_st}</span><br><span style='font-size:10px; color:#666;'>변경일: {out_dt or '-'}</span><br><strong>{total2_val:,}</strong></div>"
+            rows_html += f"<tr><td>{order_dt}</td><td>{dispatch_dt}</td><td>{cell_misu}</td><td>{cell_pay}</td><td>{in_name}</td><td>{month_val}</td><td>{route}</td><td>{d_name}</td><td>{c_num}</td><td>{d_phone}</td><td>{tax_biz_name}</td><td style='text-align:right;'>{total2_val:,}</td><td style='text-align:left; max-width:120px;'>{memo_str}</td></tr>"
+            grp_t1 += total1_val
+            grp_t2 += total2_val
+        if grp_t1 or grp_t2:
+            rows_html += f"<tr style='background:#e8f0e8; font-weight:bold;'><td colspan='2'>운임별 소계</td><td style='text-align:right;'>{grp_t1:,}</td><td style='text-align:right;'>{grp_t2:,}</td><td colspan='9'></td></tr>"
+        stats_transfer_table = f"""
+        <div class="section" style="margin-top:20px;">
+            <h3>💳 이체확인</h3>
+            <div class="table-scroll" style="max-height:400px;">
+            <table class="client-settle-table" id="statsTransferTable">
+                <thead><tr><th>오더일</th><th>배차일</th><th>업체운임합계</th><th>기사운임합계</th><th>입금자명</th><th>입금내역</th><th>노선</th><th>기사명</th><th>차량번호</th><th>연락처</th><th>사업자</th><th>기사운임합계</th><th>특이사항</th></tr></thead>
+                <tbody>{rows_html}</tbody>
+                <tfoot><tr style="background:#d0e8d0; font-weight:bold;"><td colspan="2">총합계</td><td style="text-align:right;">{sum_total1:,}</td><td style="text-align:right;">{sum_total2:,}</td><td colspan="9"></td></tr></tfoot>
+            </table>
+            </div>
+        </div>"""
+    else:
+        stats_transfer_table = ""
+
     content = f"""
     <style>
         .summary-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }}
@@ -1570,6 +1739,8 @@ def statistics():
             <div class="section"><h3>📅 월별 수익 요약</h3><div class="table-scroll"><table><thead><tr><th>연월</th><th>건수</th><th>공급가액</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th><th>수익</th></tr></thead><tbody>{summary_monthly}</tbody></table></div></div>
             <div class="section"><h3>📆 최근 일별 요약</h3><div class="table-scroll"><table><thead><tr><th>날짜</th><th>건수</th><th>공급가액</th><th>부가세</th><th>매출(합계)</th><th>기사운임</th><th>부가세</th><th>지출(합계)</th></tr></thead><tbody>{summary_daily}</tbody></table></div></div>
         </div>
+
+        {stats_transfer_table}
 
         <div style="margin-top:30px;">
             <button class="tab-btn active" onclick="openSettleTab(event, 'clientZone')">🏢 업체별 정산 관리</button>
@@ -1665,7 +1836,7 @@ def export_custom_settlement():
     month_driver = request.args.get('month_end_driver', '')
     fixed_c_nums = {str(dr.get('차량번호', '')).strip() for dr in drivers_db if str(dr.get('개인/고정', '')).strip() == '고정'}
     fixed_c_nums.discard('')
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     filtered_data = []
     for row in rows:
@@ -1727,7 +1898,7 @@ def export_custom_settlement():
 @login_required 
 def export_misu_info():
     q_st = request.args.get('status', ''); q_name = request.args.get('name', '')
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     export_data = []
     for row in rows:
@@ -1753,7 +1924,7 @@ def export_tax_not_issued():
     q_name = request.args.get('name', '')
     q_start = request.args.get('start', ''); q_end = request.args.get('end', '')
     client_by_name = {str(c.get('업체명') or '').strip(): c for c in clients_db if (c.get('업체명') or '').strip()}
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     cols = ['사업자구분', '결제특이사항', '발행구분', '사업자등록번호', '대표자명', '사업자주소', '업태', '종목', '메일주소', '오더일', '노선', '업체명', '공급가액', '부가세', '합계']
     export_with_vat = []   # 부가세 있는 건 (발행 대상)
@@ -1828,7 +1999,7 @@ def export_pay_info():
                 '예금주': str(d.get('예금주') or d.get('사업자') or '').strip(),
                 '계좌번호': str(d.get('계좌번호') or '').strip(),
             }
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     # 미지급 건만 수집 후, (기사명, 차량번호, 은행명, 예금주, 계좌번호) 기준으로 묶어 금액 합산
     raw_list = []
@@ -1897,7 +2068,7 @@ def export_stats():
     month_client = request.args.get('month_end_client', '')
     month_driver = request.args.get('month_end_driver', '')
     
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     
     # 기사관리에서 개인/고정="고정"인 차량번호 목록 (차량번호 기준)
@@ -1954,7 +2125,7 @@ def upload_evidence(ledger_id):
         target_seq = '1'
     if request.method == 'POST':
         tax_file, ship_file = request.files.get('tax_file'), request.files.get('ship_file')
-        conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+        conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT tax_img, ship_img FROM ledger WHERE id = ?", (ledger_id,)).fetchone()
         if not row:
             conn.close()
@@ -2043,7 +2214,7 @@ def save_ledger_api():
     data = {k: sanitize_ledger_value(k, raw.get(k, '')) for k in keys}
     if 'id' in raw and raw['id']:
         data['id'] = raw['id']
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
     
     keys = [c['k'] for c in FULL_COLUMNS]
@@ -2069,18 +2240,47 @@ def save_ledger_api():
     cursor.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)",
                    (action_type, target_id, details))
 
+    # 기사명·차량번호 있으면 기사관리 10개 항목 전체(연락처·은행명·계좌번호·예금주·사업자번호·사업자·개인고정·메모) 저장
     if data.get('d_name') and data.get('c_num'):
         d_vals = (
             data.get('d_phone',''), data.get('bank_acc',''), data.get('tax_biz_num',''),
             data.get('tax_biz_name',''), data.get('memo1',''), 
             data.get('d_bank_name',''), data.get('d_bank_owner',''), 
+            str(data.get('log_move','')).strip(),
             data.get('d_name'), data.get('c_num')
         )
         cursor.execute("SELECT 1 FROM drivers WHERE 기사명 = ? AND 차량번호 = ?", (data.get('d_name'), data.get('c_num')))
         if cursor.fetchone():
-            cursor.execute("UPDATE drivers SET 연락처=?, 계좌번호=?, 사업자번호=?, 사업자=?, 메모=?, 은행명=?, 예금주=? WHERE 기사명=? AND 차량번호=?", d_vals)
+            cursor.execute("UPDATE drivers SET 연락처=?, 계좌번호=?, 사업자번호=?, 사업자=?, 메모=?, 은행명=?, 예금주=?, [개인/고정]=? WHERE 기사명=? AND 차량번호=?", d_vals)
         else:
-            cursor.execute("INSERT INTO drivers (연락처, 계좌번호, 사업자번호, 사업자, 메모, 은행명, 예금주, 기사명, 차량번호) VALUES (?,?,?,?,?,?,?,?,?)", d_vals)
+            cursor.execute("INSERT INTO drivers (연락처, 계좌번호, 사업자번호, 사업자, 메모, 은행명, 예금주, [개인/고정], 기사명, 차량번호) VALUES (?,?,?,?,?,?,?,?,?,?)", d_vals)
+
+    # 업체명 있으면 업체관리(clients) 13개 탭 전부 동기화 — 사업자구분·업체명·발행구분·사업자등록번호·대표자명·사업자주소·업태·종목·메일주소·담당자·연락처·결제특이사항·비고
+    if data.get('client_name'):
+        c_name = str(data.get('client_name', '')).strip()
+        c_vals = (
+            str(data.get('pay_to', '')).strip(),
+            str(data.get('biz_issue', '')).strip(),
+            str(data.get('biz_num', '')).strip(),
+            str(data.get('biz_owner', '')).strip(),
+            str(data.get('biz_addr', '')).strip(),
+            str(data.get('biz_type2', '')).strip(),
+            str(data.get('biz_type1', '')).strip(),
+            str(data.get('mail', '')).strip(),
+            str(data.get('c_mgr_name', '')).strip(),
+            str(data.get('c_phone', '')).strip(),
+            str(data.get('pay_memo', '')).strip(),
+            str(data.get('client_memo', '')).strip(),
+            c_name
+        )
+        cursor.execute("SELECT rowid FROM clients WHERE 업체명 = ?", (c_name,))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute("""UPDATE clients SET [사업자구분]=?, [발행구분]=?, [사업자등록번호]=?, [대표자명]=?, [사업자주소]=?, [업태]=?, [종목]=?, [메일주소]=?, [담당자]=?, [연락처]=?, [결제특이사항]=?, [비고]=? WHERE 업체명=?""", c_vals)
+        else:
+            cursor.execute("""INSERT INTO clients ([사업자구분], [업체명], [발행구분], [사업자등록번호], [대표자명], [사업자주소], [업태], [종목], [메일주소], [담당자], [연락처], [결제특이사항], [비고])
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (c_vals[0], c_name, c_vals[1], c_vals[2], c_vals[3], c_vals[4], c_vals[5], c_vals[6], c_vals[7], c_vals[8], c_vals[9], c_vals[10], c_vals[11]))
 
     conn.commit()
     conn.close()
@@ -2090,7 +2290,7 @@ def save_ledger_api():
 @app.route('/api/get_order_logs/<int:order_id>')
 @login_required
 def get_order_logs(order_id):
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     logs = conn.execute("""
         SELECT timestamp, action, details 
         FROM activity_logs 
@@ -2108,7 +2308,7 @@ def get_order_logs(order_id):
 @app.route('/api/get_logs')
 @login_required
 def get_logs():
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     logs = conn.execute("SELECT * FROM activity_logs ORDER BY id DESC LIMIT 50").fetchall()
     conn.close()
     result = []
@@ -2134,7 +2334,7 @@ def get_ledger():
     month_end_client = request.args.get('month_end_client', '')
     month_end_driver = request.args.get('month_end_driver', '')
     
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     
     # 기본 쿼리
     query = "SELECT * FROM ledger"
@@ -2164,6 +2364,10 @@ def get_ledger():
     for r in all_rows[start_idx:end_idx]:
         d = dict(r)
         calc_vat_auto(d)
+        # 개인/고정: 기사관리(기사현황)와 연동하여 해당 기사 값 표시
+        driver_fixed = get_driver_fixed_type(drivers_db, d.get('d_name'), d.get('c_num'))
+        if driver_fixed is not None:
+            d['log_move'] = driver_fixed
         page_rows.append(d)
     conn.close()
     return jsonify({"data": page_rows, "total_pages": total_pages, "current_page": page})
@@ -2173,13 +2377,17 @@ def get_ledger():
 @login_required
 def get_ledger_row(row_id):
     """단일 장부 행 조회 (정산관리 → 통합장부입력 연동용)"""
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM ledger WHERE id = ?", (row_id,)).fetchone()
     conn.close()
     if not row:
         return jsonify({"error": "not found"}), 404
     d = dict(row)
     calc_vat_auto(d)
+    # 개인/고정: 기사관리와 연동
+    driver_fixed = get_driver_fixed_type(drivers_db, d.get('d_name'), d.get('c_num'))
+    if driver_fixed is not None:
+        d['log_move'] = driver_fixed
     return jsonify(d)
 
 
@@ -2187,7 +2395,7 @@ def get_ledger_row(row_id):
 @login_required
 def delete_ledger_api(row_id):
     """장부 행 삭제"""
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cur = conn.execute("SELECT id FROM ledger WHERE id = ?", (row_id,)).fetchone()
     if not cur:
         conn.close()
@@ -2203,7 +2411,7 @@ def delete_ledger_api(row_id):
 @login_required
 def recall_ledger_api(row_id):
     """오더 재호출: 동일 내용으로 현재 시간 기준 새 행 생성"""
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM ledger WHERE id = ?", (row_id,)).fetchone()
     conn.close()
     if not row:
@@ -2225,7 +2433,7 @@ def recall_ledger_api(row_id):
     data['ship_img'] = ''
     data['is_mail_done'] = ''
     data['mail_dt'] = ''
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
     placeholders = ", ".join(['?'] * len(keys))
     cursor.execute(f"INSERT INTO ledger ({', '.join([f'[{k}]' for k in keys])}) VALUES ({placeholders})", [data.get(k, '') for k in keys])
@@ -2252,11 +2460,20 @@ def update_status():
             return jsonify({"status": "error", "message": "invalid id"}), 400
     except (ValueError, TypeError):
         return jsonify({"status": "error", "message": "invalid id"}), 400
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     display_name = next((col['n'] for col in FULL_COLUMNS if col['k'] == key), key)
     cursor.execute(f"UPDATE ledger SET [{key}] = ? WHERE id = ?", (data.get('value'), row_id))
+    # 개인/고정: 기사관리와 연동 — 장부에서 변경 시 해당 기사의 기사관리(개인/고정)도 동기화
+    if key == 'log_move':
+        row = cursor.execute("SELECT d_name, c_num FROM ledger WHERE id = ?", (row_id,)).fetchone()
+        if row and (row[0] or row[1]):
+            cursor.execute("UPDATE drivers SET [개인/고정] = ? WHERE 기사명 = ? AND 차량번호 = ?",
+                           (str(data.get('value', '')).strip(), row[0] or '', row[1] or ''))
+            if cursor.rowcount == 0:
+                cursor.execute("INSERT INTO drivers (기사명, 차량번호, [개인/고정]) VALUES (?, ?, ?)",
+                               (row[0] or '', row[1] or '', str(data.get('value', '')).strip()))
     # 계산서 발행완료 시 계산서발행일(tax_dt) 동시 설정, 취소 시 비움
     if key == 'tax_chk':
         tax_dt_val = now_kst().strftime('%Y-%m-%d') if data.get('value') == '발행완료' else ''
@@ -2279,13 +2496,15 @@ def update_status():
                    ("상태변경", row_id, log_details))
     conn.commit()
     conn.close()
+    if key == 'log_move':
+        load_db_to_mem()
     return jsonify({"status": "success"})
 
 @app.route('/export_clients')
 @login_required
 def export_clients():
     """업체관리 - 비고, 사업자구분, 결제특이사항, 발행구분, 사업자등록번호, 대표자명, 사업자주소, 업태, 종목, 메일주소, 오더일, 노선, 업체운임 순 엑셀"""
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     # 업체명별 최신 오더 1건 (오더일, 노선, 업체운임)
     ledger_rows = conn.execute(
         "SELECT client_name, order_dt, route, fee, comm, pre_post FROM ledger WHERE client_name IS NOT NULL AND client_name != '' ORDER BY id DESC"
@@ -2329,7 +2548,7 @@ def export_clients():
 @app.route('/api/delete_client/<int:row_id>', methods=['POST', 'DELETE'])
 @login_required
 def api_delete_client(row_id):
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     conn.execute("DELETE FROM clients WHERE rowid = ?", (row_id,))
     conn.commit(); conn.close()
     load_db_to_mem()
@@ -2339,7 +2558,7 @@ def api_delete_client(row_id):
 @login_required
 def api_update_client(row_id):
     data = request.json or {}
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(clients)")
     cols = [r[1] for r in cursor.fetchall() if r[1] != 'id']
@@ -2371,11 +2590,11 @@ def manage_clients():
                 else:
                     df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
                 df = df.fillna('').astype(str)
-                conn = sqlite3.connect('ledger.db')
+                conn = sqlite3.connect('ledger.db', timeout=15)
                 df.to_sql('clients', conn, if_exists='replace', index=False)
                 conn.commit(); conn.close(); load_db_to_mem()
             except Exception as e: return f"업로드 오류: {str(e)}"
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     try:
         clients_with_id = conn.execute("SELECT rowid as id, * FROM clients").fetchall()
     except sqlite3.OperationalError:
@@ -2474,7 +2693,7 @@ def manage_clients():
 @app.route('/arrival')
 @login_required
 def arrival():
-    conn = sqlite3.connect('ledger.db'); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM arrival_status ORDER BY order_idx ASC, id ASC").fetchall(); conn.close()
     items = [dict(r) for r in rows]
     items_json = json.dumps(items, ensure_ascii=False)
@@ -2842,7 +3061,7 @@ def arrival_add():
     content_color = d.get('content_color') or '#1a2a6c'
     content_font = d.get('content_font') or 'Malgun Gothic'
     content_font_size = d.get('content_font_size') or '16px'
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
     cursor.execute("SELECT COALESCE(MAX(order_idx), -1) + 1 FROM arrival_status")
     next_idx = cursor.fetchone()[0]
@@ -2861,7 +3080,7 @@ def arrival_update():
             return jsonify({"status": "error", "message": "invalid id"}), 400
     except (ValueError, TypeError):
         return jsonify({"status": "error", "message": "invalid id"}), 400
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
     cursor.execute("SELECT content, content_important, content_color, content_font, content_font_size, target_time FROM arrival_status WHERE id=?", (nid,))
     row = cursor.fetchone()
@@ -2888,7 +3107,7 @@ def arrival_update():
 @app.route('/api/arrival/delete/<int:id>', methods=['POST'])
 @login_required
 def arrival_delete(id):
-    conn = sqlite3.connect('ledger.db'); conn.execute("DELETE FROM arrival_status WHERE id=?", (id,)); conn.commit(); conn.close()
+    conn = sqlite3.connect('ledger.db', timeout=15); conn.execute("DELETE FROM arrival_status WHERE id=?", (id,)); conn.commit(); conn.close()
     return jsonify({"status": "success"})
 
 @app.route('/manage_drivers', methods=['GET', 'POST'])
@@ -2905,7 +3124,7 @@ def manage_drivers():
                 else:
                     df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
                 df = df.fillna('').astype(str)
-                conn = sqlite3.connect('ledger.db')
+                conn = sqlite3.connect('ledger.db', timeout=15)
                 df.to_sql('drivers', conn, if_exists='replace', index=False)
                 conn.commit(); conn.close(); load_db_to_mem()
             except Exception as e:
@@ -3004,7 +3223,7 @@ def manage_drivers():
 @app.route('/api/delete_driver/<int:driver_id>', methods=['POST', 'DELETE'])
 @login_required
 def api_delete_driver(driver_id):
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     conn.execute("DELETE FROM drivers WHERE id = ?", (driver_id,))
     conn.commit(); conn.close()
     load_db_to_mem()
@@ -3014,7 +3233,7 @@ def api_delete_driver(driver_id):
 @login_required
 def api_update_driver(driver_id):
     data = request.json or {}
-    conn = sqlite3.connect('ledger.db')
+    conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(drivers)")
     cols = [r[1] for r in cursor.fetchall() if r[1] != 'id']
