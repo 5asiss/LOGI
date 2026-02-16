@@ -25,7 +25,7 @@
 - [ ] `ledger.db`, `static/evidences/` 등 데이터·업로드 경로 백업 및 권한 설정
 - [ ] 방화벽에서 필요한 포트만 개방
 - [ ] `ledger.db`가 git에 커밋되지 않도록 확인 (민감 데이터)
-- [ ] Gunicorn 사용 시: `gunicorn -w 4 -b 0.0.0.0:5000 app:app`
+- [ ] Gunicorn 사용 시: `gunicorn app:app --bind 0.0.0.0:$PORT` (Render 등에서는 반드시 `$PORT` 사용)
 
 ## Linux 예시 (systemd 또는 실행 전)
 
@@ -37,3 +37,36 @@ python app.py
 ```
 
 또는 `.env` 파일을 사용하는 경우, 서버 실행 전에 `export $(cat .env | xargs)` 등으로 로드 후 실행하세요. (`.env`는 반드시 .gitignore에 포함)
+
+---
+
+## Render 배포 점검사항
+
+Render에 올리기 전 아래 항목을 확인하세요.
+
+### 필수 설정 (Render 대시보드 → Environment)
+
+| 항목 | 설명 |
+|------|------|
+| **Build Command** | `pip install -r requirements.txt` |
+| **Start Command** | `gunicorn app:app --bind 0.0.0.0:$PORT` |
+| **FLASK_SECRET_KEY** | 반드시 설정 (미설정 시 기본 dev 키 사용됨). Render에서 "Generate" 가능 |
+| **ADMIN_PW** | 1234가 아닌 강한 비밀번호로 설정 |
+
+### 선택 설정
+
+| 항목 | 설명 |
+|------|------|
+| **ADMIN_ID** | 기본값 `admin` 유지 또는 변경 |
+| **FLASK_DEBUG** | 설정하지 않거나 비움 (배포 시 디버그 끄기) |
+| **HTTPS** | Render는 기본 HTTPS이므로 `HTTPS=1` 설정 권장 (세션 쿠키 Secure) |
+
+### 데이터 유의사항 (중요)
+
+- **SQLite(`ledger.db`)**: Render의 파일시스템은 **재배포 시 초기화**됩니다. 무료/스탠다드 플랜에서는 배포할 때마다 장부·기사·업체 데이터가 사라질 수 있습니다.
+  - **권장**: Render **Disk**(유료)를 붙여 DB·업로드 경로를 영구 디스크에 두거나, 정기 백업 후 복원 스크립트 사용.
+- **업로드 파일(`static/evidences/`)**: 위와 동일하게 재배포 시 삭제됩니다. Disk 마운트 또는 외부 스토리지(S3 등) 연동을 고려하세요.
+
+### render.yaml 사용 시
+
+저장소 루트의 `render.yaml`을 사용하면 Blueprint로 서비스를 만들 수 있습니다. `ADMIN_PW`는 대시보드에서 직접 입력해야 하며, `FLASK_SECRET_KEY`는 Render가 자동 생성할 수 있습니다.
