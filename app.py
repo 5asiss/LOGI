@@ -355,13 +355,23 @@ BASE_HTML = """
         .scroll-sticky-wrap { position: sticky; top: 0; left: 0; right: 0; z-index: 10; background: #eef1f6; padding-bottom: 6px; margin-bottom: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); border-radius: 6px; }
         .scroll-sticky-wrap .scroll-top { margin-bottom: 4px; border-radius: 6px 6px 0 0; }
         .scroll-sticky-wrap .scroll-x { border-radius: 6px; }
-        /* 통합장부: 화면 내릴 때 스크롤 영역이 상단에 붙어서 따라오도록 sticky 유지 */
-        .scroll-x-ledger { scroll-behavior: smooth; -webkit-overflow-scrolling: touch; }
-        /* 통합장부·정산관리: 가로 스크롤바 화면 하단 고정 (항상 보이게) */
         .page-ledger { padding-bottom: 36px; }
+        .page-ledger #ledgerListScroll { scrollbar-width: none; -ms-overflow-style: none; max-height: 70vh; overflow-y: auto; overflow-x: auto; }
+        .page-ledger #ledgerListScroll::-webkit-scrollbar { display: none; height: 0; }
+        .page-ledger #ledgerListScroll table thead th { position: sticky; top: 0; z-index: 5; background: #f0f3f7; box-shadow: 0 1px 0 #dee2e6; }
+        .page-ledger #ledgerListScrollTop,
+        .page-ledger #ledgerListScrollBottom { height: 20px; min-height: 20px; max-height: 20px; overflow-x: auto; overflow-y: hidden; }
+        .page-ledger #ledgerListScrollTop::-webkit-scrollbar,
+        .page-ledger #ledgerListScrollBottom::-webkit-scrollbar { height: 10px; }
+        .page-ledger #ledgerListScrollTop,
+        .page-ledger #ledgerListScrollBottom { scrollbar-width: thin; }
         .page-settlement { padding-bottom: 36px; }
-        .page-settlement #settlementScroll { scrollbar-width: none; -ms-overflow-style: none; }
+        .page-settlement #settlementScroll { scrollbar-width: none; -ms-overflow-style: none; max-height: 70vh; overflow-y: auto; overflow-x: auto; }
         .page-settlement #settlementScroll::-webkit-scrollbar { display: none; height: 0; }
+        .page-settlement #settlementScroll table thead th { position: sticky; top: 0; z-index: 5; background: #f0f3f7; box-shadow: 0 1px 0 #dee2e6; }
+        .page-settlement .scroll-top { height: 20px; min-height: 20px; max-height: 20px; overflow-x: auto; overflow-y: hidden; flex-shrink: 0; }
+        .page-settlement .scroll-top::-webkit-scrollbar { height: 10px; }
+        .page-settlement .scroll-top { scrollbar-width: thin; }
         .ledger-scrollbar-fix { position: fixed; bottom: 0; left: 0; right: 0; height: 28px; background: #f0f3f7; border-top: 2px solid #1a2a6c; z-index: 1000; overflow-x: auto; overflow-y: hidden; display: flex; align-items: center; }
         .ledger-scrollbar-fix-inner { height: 1px; min-width: 100%; flex-shrink: 0; }
         table { border-collapse: collapse; width: 100%; white-space: nowrap; font-size: 12px; }
@@ -778,7 +788,7 @@ function loadLedgerList() {
             lastLedgerData = res.data;
             renderTableRows(res.data);
             if (typeof renderPagination === 'function') renderPagination(res.total_pages, res.current_page, 'ledger');
-            if (typeof window.updateLedgerScrollBarWidth === 'function') setTimeout(window.updateLedgerScrollBarWidth, 100);
+            if (typeof window.updateLedgerScrollBarWidth === 'function') requestAnimationFrame(function() { window.updateLedgerScrollBarWidth(); });
         });
 }
 
@@ -874,20 +884,27 @@ function loadLedgerList() {
         }
 
         function initDraggable() {
-            const body = document.getElementById('ledgerBody');
-            if(!body) return;
-            const draggables = document.querySelectorAll('.draggable');
-            draggables.forEach(draggable => {
-                draggable.addEventListener('dragstart', () => draggable.classList.add('dragging'));
-                draggable.addEventListener('dragend', () => draggable.classList.remove('dragging'));
-            });
-            body.addEventListener('dragover', e => {
-                e.preventDefault();
-                const dragging = document.querySelector('.dragging');
-                const afterElement = getDragAfterElement(body, e.clientY);
-                if (afterElement == null) body.appendChild(dragging);
-                else body.insertBefore(dragging, afterElement);
-            });
+            var body = document.getElementById('ledgerBody');
+            if (!body) return;
+            if (!body._dragBound) {
+                body._dragBound = true;
+                body.addEventListener('dragstart', function(e) {
+                    var t = e.target.closest('tr.draggable');
+                    if (t) t.classList.add('dragging');
+                }, false);
+                body.addEventListener('dragend', function(e) {
+                    var t = e.target.closest('tr.draggable');
+                    if (t) t.classList.remove('dragging');
+                }, false);
+                body.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    var dragging = body.querySelector('tr.dragging');
+                    if (!dragging) return;
+                    var after = getDragAfterElement(body, e.clientY);
+                    if (after) body.insertBefore(dragging, after);
+                    else body.appendChild(dragging);
+                }, false);
+            }
             initLedgerContextMenu();
         }
         let ledgerCtxRowId = null;
@@ -950,10 +967,14 @@ function loadLedgerList() {
         function filterLedger() {
             clearTimeout(filterLedgerTid);
             filterLedgerTid = setTimeout(function() {
-                const query = document.getElementById('ledgerSearch').value.toLowerCase();
-                const filtered = lastLedgerData.filter(item => Object.values(item).some(val => String(val).toLowerCase().includes(query)));
+                var query = (document.getElementById('ledgerSearch').value || '').toLowerCase();
+                if (!query) { renderTableRows(lastLedgerData); return; }
+                var filtered = lastLedgerData.filter(function(item) {
+                    for (var k in item) { if (String(item[k] || '').toLowerCase().indexOf(query) !== -1) return true; }
+                    return false;
+                });
                 renderTableRows(filtered);
-            }, 120);
+            }, 200);
         }
 
         window.editEntry = function(id) {
@@ -1047,37 +1068,71 @@ function loadLedgerList() {
             }).catch(runLedgerInit);
         }
 
-        // 통합장부: 입력·목록·하단 고정 바 가로스크롤 동기화 (하단 바는 화면에 항상 고정)
-        const ledgerScrollEls = ['ledgerFormScroll', 'ledgerListScroll', 'ledgerScrollBarFix'];
-        let ledgerScrollSyncing = false;
+        var ledgerFormScrollId = 'ledgerFormScroll';
+        var ledgerListScrollIds = ['ledgerListScrollTop', 'ledgerListScroll', 'ledgerListScrollBottom', 'ledgerScrollBarFix'];
+        let ledgerScrollPending = false, ledgerScrollSource = null, ledgerScrollIsList = false;
+        function applyLedgerScroll() {
+            ledgerScrollPending = false;
+            var src = ledgerScrollSource; var isList = ledgerScrollIsList; ledgerScrollSource = null;
+            if (!src) return;
+            var left = src.scrollLeft;
+            if (isList) {
+                for (var i = 0; i < ledgerListScrollIds.length; i++) {
+                    var el = document.getElementById(ledgerListScrollIds[i]);
+                    if (el && el !== src && el.scrollLeft !== left) el.scrollLeft = left;
+                }
+            }
+        }
         function syncLedgerScroll(sourceEl) {
-            if (ledgerScrollSyncing) return;
-            ledgerScrollSyncing = true;
-            const left = sourceEl.scrollLeft;
-            ledgerScrollEls.forEach(id => {
-                const el = document.getElementById(id);
-                if (el && el !== sourceEl && el.scrollLeft !== left) el.scrollLeft = left;
-            });
-            requestAnimationFrame(() => { ledgerScrollSyncing = false; });
+            var id = sourceEl && sourceEl.id;
+            ledgerScrollSource = sourceEl;
+            ledgerScrollIsList = ledgerListScrollIds.indexOf(id) !== -1;
+            if (ledgerScrollPending) return;
+            ledgerScrollPending = true;
+            requestAnimationFrame(applyLedgerScroll);
         }
         function bindLedgerScroll() {
-            ledgerScrollEls.forEach(id => {
-                const el = document.getElementById(id);
-                if (!el) return;
-                el.addEventListener('scroll', () => syncLedgerScroll(el));
-            });
+            var formEl = document.getElementById(ledgerFormScrollId);
+            if (formEl) formEl.addEventListener('scroll', function(e){ syncLedgerScroll(e.target); }, { passive: true });
+            for (var i = 0; i < ledgerListScrollIds.length; i++) {
+                var el = document.getElementById(ledgerListScrollIds[i]);
+                if (el) el.addEventListener('scroll', function(e){ syncLedgerScroll(e.target); }, { passive: true });
+            }
+        }
+        function updateLedgerListScrollWidths() {
+            var listEl = document.getElementById('ledgerListScroll');
+            var topEl = document.getElementById('ledgerListScrollTop');
+            var botEl = document.getElementById('ledgerListScrollBottom');
+            if (!listEl || !topEl) return;
+            var mainTbl = listEl.querySelector('table');
+            var topTbl = topEl.querySelector('table');
+            if (!mainTbl || !topTbl) return;
+            var mainRow = mainTbl.querySelector('thead tr');
+            var topRow = topTbl.querySelector('tr');
+            var botTbl = botEl ? botEl.querySelector('table') : null;
+            var botRow = botTbl ? botTbl.querySelector('tr') : null;
+            if (!mainRow || !topRow || mainRow.cells.length !== topRow.cells.length) return;
+            for (var i = 0; i < mainRow.cells.length; i++) {
+                var w = mainRow.cells[i].offsetWidth;
+                topRow.cells[i].style.width = topRow.cells[i].style.minWidth = w + 'px';
+                if (botRow && botRow.cells[i]) botRow.cells[i].style.width = botRow.cells[i].style.minWidth = w + 'px';
+            }
+            topEl.style.width = listEl.clientWidth + 'px';
+            if (botEl) botEl.style.width = listEl.clientWidth + 'px';
         }
         function updateLedgerScrollBarWidth() {
-            const inner = document.getElementById('ledgerScrollBarFixInner');
-            const formEl = document.getElementById('ledgerFormScroll');
-            const listEl = document.getElementById('ledgerListScroll');
+            var inner = document.getElementById('ledgerScrollBarFixInner');
+            var listEl = document.getElementById('ledgerListScroll');
             if (!inner) return;
-            let w = 0;
-            if (formEl && formEl.scrollWidth > w) w = formEl.scrollWidth;
-            if (listEl && listEl.scrollWidth > w) w = listEl.scrollWidth;
-            inner.style.width = (w || 100) + 'px';
+            inner.style.width = (listEl && listEl.scrollWidth) ? listEl.scrollWidth + 'px' : '100px';
+            updateLedgerListScrollWidths();
         }
-        document.addEventListener('DOMContentLoaded', () => {
+        var ledgerResizeTimer = 0;
+        window.addEventListener('resize', function() {
+            if (ledgerResizeTimer) clearTimeout(ledgerResizeTimer);
+            ledgerResizeTimer = setTimeout(function() { updateLedgerScrollBarWidth(); ledgerResizeTimer = 0; }, 200);
+        });
+        document.addEventListener('DOMContentLoaded', function() {
             bindLedgerScroll();
             updateLedgerScrollBarWidth();
         });
@@ -1209,7 +1264,9 @@ def index():
         <button type="button" class="btn-edit" onclick="var s=document.getElementById('startDate').value; var e=document.getElementById('endDate').value; var c=document.getElementById('filterMonthEndClient').checked?'1':''; var d=document.getElementById('filterMonthEndDriver').checked?'1':''; var u='/api/ledger_excel?start='+encodeURIComponent(s)+'&end='+encodeURIComponent(e)+'&month_end_client='+c+'&month_end_driver='+d; window.location.href=u;">엑셀 다운로드</button>
         </div>
         <div class="scroll-sticky-wrap">
+        <div class="scroll-top" id="ledgerListScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody><tr>{"<td>-</td>" * (1 + len(FULL_COLUMNS))}</tr></tbody></table></div>
         <div class="scroll-x scroll-x-ledger" id="ledgerListScroll"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
+        <div class="scroll-top" id="ledgerListScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody><tr>{"<td>-</td>" * (1 + len(FULL_COLUMNS))}</tr></tbody></table></div>
         </div>
         <div id="ledgerPagination" class="pagination"></div>
     </div>
@@ -1251,7 +1308,24 @@ def settlement():
     per_page_arg = safe_int(request.args.get('per_page'), 20)
     per_page = per_page_arg if per_page_arg in (20, 50, 100) else 20
     
-    rows = conn.execute("SELECT * FROM ledger ORDER BY dispatch_dt DESC").fetchall(); conn.close()
+    # 성능: 날짜·이름 필터를 SQL로 적용해 조회량 감소
+    query = "SELECT * FROM ledger"
+    params = []
+    conditions = []
+    if q_start:
+        conditions.append("order_dt >= ?")
+        params.append(q_start)
+    if q_end:
+        conditions.append("order_dt <= ?")
+        params.append(q_end)
+    if q_name and q_name.strip():
+        conditions.append("(client_name LIKE ? OR d_name LIKE ?)")
+        params.extend([f"%{q_name.strip()}%", f"%{q_name.strip()}%"])
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY dispatch_dt DESC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
     
     filtered_rows = []
     today = now_kst()
@@ -1481,23 +1555,34 @@ def settlement():
             if (botEl) botEl.style.width = w + 'px';
             if (barInner) barInner.style.width = (mainEl.scrollWidth || 100) + 'px';
         }}
-        let syncing = false;
-        function sync(src) {{
-            if (syncing) return;
-            syncing = true;
-            const left = src.scrollLeft;
+        var settleScrollPending = false, settleScrollSrc = null;
+        function applySettleScroll() {{
+            settleScrollPending = false;
+            var src = settleScrollSrc; settleScrollSrc = null;
+            if (!src) return;
+            var left = src.scrollLeft;
             if (topEl.scrollLeft !== left) topEl.scrollLeft = left;
             if (mainEl.scrollLeft !== left) mainEl.scrollLeft = left;
             if (botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left;
             if (barEl && barEl.scrollLeft !== left) barEl.scrollLeft = left;
-            requestAnimationFrame(() => {{ syncing = false; }});
         }}
-        topEl.addEventListener('scroll', () => sync(topEl));
-        mainEl.addEventListener('scroll', () => sync(mainEl));
-        if (botEl) botEl.addEventListener('scroll', () => sync(botEl));
-        if (barEl) barEl.addEventListener('scroll', () => sync(barEl));
+        function syncSettle(e) {{
+            settleScrollSrc = e.target;
+            if (settleScrollPending) return;
+            settleScrollPending = true;
+            requestAnimationFrame(applySettleScroll);
+        }}
+        var scrollOpt = {{ passive: true }};
+        topEl.addEventListener('scroll', syncSettle, scrollOpt);
+        mainEl.addEventListener('scroll', syncSettle, scrollOpt);
+        if (botEl) botEl.addEventListener('scroll', syncSettle, scrollOpt);
+        if (barEl) barEl.addEventListener('scroll', syncSettle, scrollOpt);
+        var settleResizeTimer = 0;
+        window.addEventListener('resize', function() {{
+            if (settleResizeTimer) clearTimeout(settleResizeTimer);
+            settleResizeTimer = setTimeout(function() {{ matchWidth(); settleResizeTimer = 0; }}, 200);
+        }});
         setTimeout(matchWidth, 80);
-        window.addEventListener('resize', matchWidth);
     }})();
     </script>
     """
@@ -2339,18 +2424,15 @@ def get_ledger():
         conditions.append(" (month_end_client = '1' OR month_end_client = 'Y')")
     if month_end_driver:
         conditions.append(" (month_end_driver = '1' OR month_end_driver = 'Y')")
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
-        
-    query += " ORDER BY id DESC"
-    
-    all_rows = conn.execute(query, params).fetchall()
-    total_count = len(all_rows)
-    total_pages = (total_count + per_page - 1) // per_page
+    base_where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    total_count = conn.execute("SELECT COUNT(*) FROM ledger" + base_where, params).fetchone()[0]
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
     start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
+    query += base_where + " ORDER BY id DESC LIMIT ? OFFSET ?"
+    params.extend([per_page, start_idx])
+    rows = conn.execute(query, params).fetchall()
     page_rows = []
-    for r in all_rows[start_idx:end_idx]:
+    for r in rows:
         d = dict(r)
         calc_vat_auto(d)
         # 개인/고정: 기사관리(기사현황)와 연동하여 해당 기사 값 표시
@@ -2644,24 +2726,41 @@ def manage_clients():
         clients_with_id = []
     conn.close()
     clients_with_id = [dict(r) for r in clients_with_id]
+    page = max(1, safe_int(request.args.get('page'), 1))
+    per_page_arg = safe_int(request.args.get('per_page'), 50)
+    per_page = per_page_arg if per_page_arg in (20, 50, 100) else 50
+    total_clients = len(clients_with_id)
+    total_pages = max(1, (total_clients + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start_idx = (page - 1) * per_page
+    page_clients = clients_with_id[start_idx:start_idx + per_page]
+    pagination_client_html = "".join([f'<a href="/manage_clients?page={i}&per_page={per_page}" class="page-btn {"active" if i == page else ""}">{i}</a>' for i in range(1, total_pages + 1)])
     def _client_row(r):
         cid = r.get('id', '')
         search = ' '.join([str(r.get(c, '')).lower() for c in CLIENT_COLS])
         btns = f'<td style="white-space:nowrap;"><button type="button" class="btn-edit" onclick="editClient({cid})" style="padding:4px 8px; font-size:11px; margin-right:4px;">수정</button><button type="button" class="btn-status bg-red" onclick="deleteClient({cid})" style="padding:4px 8px; font-size:11px;">삭제</button></td>'
         cells = ''.join([f'<td>{r.get(c, "")}</td>' for c in CLIENT_COLS])
         return f'<tr class="filter-row" data-id="{cid}" data-search="{search}">{btns}{cells}</tr>'
-    rows_html = "".join([_client_row(r) for r in clients_with_id])
+    rows_html = "".join([_client_row(r) for r in page_clients])
     content = f"""<div class="section"><h2>업체 관리</h2>
     <div style="margin-bottom:15px;">
         <form method="post" enctype="multipart/form-data" style="display:inline;"><input type="file" name="file"><button type="submit" class="btn">업로드</button></form>
     </div>
-    <div style="margin-bottom:12px;">
+    <div style="margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <input type="text" id="clientFilter" placeholder="업체명, 사업자번호, 대표자명 등 검색..." style="width:280px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" oninput="filterTable('clientFilter', 'clientTableBody')">
-        <span id="clientFilterCount" style="font-size:12px; color:#64748b; margin-left:8px;"></span>
+        <span id="clientFilterCount" style="font-size:12px; color:#64748b;"></span>
+        <span style="margin-left:8px;">출력</span>
+        <select onchange="location.href='/manage_clients?page=1&per_page='+this.value" style="padding:6px 10px; border:1px solid #d0d7de; border-radius:4px; font-size:13px;">
+            <option value="20" {"selected" if per_page == 20 else ""}>20</option>
+            <option value="50" {"selected" if per_page == 50 else ""}>50</option>
+            <option value="100" {"selected" if per_page == 100 else ""}>100</option>
+        </select>
+        <span style="font-size:12px; color:#666;">개씩</span>
+        <span style="font-size:12px; color:#64748b;">(총 {total_clients}개)</span>
     </div>
     <div class="scroll-top" id="clientScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in CLIENT_COLS])}</tr></tbody></table></div>
     <div class="scroll-x" id="clientScroll"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody id="clientTableBody">{rows_html}</tbody></table></div>
-    <div class="scroll-top" id="clientScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in CLIENT_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in CLIENT_COLS])}</tr></tbody></table></div>
+    <div class="pagination" style="margin-top:12px;">{pagination_client_html}</div>
     <div id="clientEditModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5);">
         <div style="background:white; max-width:600px; margin:40px auto; padding:24px; border-radius:10px; max-height:90vh; overflow-y:auto;">
             <h3 style="margin:0 0 20px 0;">업체 수정</h3>
@@ -2699,34 +2798,27 @@ def manage_clients():
     (function() {{
         const topEl = document.getElementById('clientScrollTop');
         const mainEl = document.getElementById('clientScroll');
-        const botEl = document.getElementById('clientScrollBottom');
         if (!topEl || !mainEl) return;
         function matchWidth() {{
             const mainTbl = mainEl.querySelector('table');
             const topTbl = topEl.querySelector('table');
-            const botTbl = botEl ? botEl.querySelector('table') : null;
             if (mainTbl && topTbl) {{
                 const mainRow = mainTbl.querySelector('thead tr') || mainTbl.querySelector('tr');
                 const topRow = topTbl.querySelector('tr');
-                const botRow = botTbl ? botTbl.querySelector('tr') : null;
                 if (mainRow && topRow && mainRow.cells.length === topRow.cells.length) {{
                     for (let i = 0; i < mainRow.cells.length; i++) {{
                         const w = mainRow.cells[i].offsetWidth;
                         topRow.cells[i].style.width = w + 'px';
                         topRow.cells[i].style.minWidth = w + 'px';
-                        if (botRow && botRow.cells[i]) {{ botRow.cells[i].style.width = w + 'px'; botRow.cells[i].style.minWidth = w + 'px'; }}
                     }}
                 }}
             }}
-            const w = mainEl.clientWidth;
-            topEl.style.width = w + 'px';
-            if (botEl) botEl.style.width = w + 'px';
+            topEl.style.width = mainEl.clientWidth + 'px';
         }}
         let syncing = false;
-        function sync(src) {{ if(syncing) return; syncing = true; const left = src.scrollLeft; if(topEl.scrollLeft !== left) topEl.scrollLeft = left; if(mainEl.scrollLeft !== left) mainEl.scrollLeft = left; if(botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left; requestAnimationFrame(()=>{{syncing=false;}}); }}
+        function sync(src) {{ if(syncing) return; syncing = true; const left = src.scrollLeft; if(topEl.scrollLeft !== left) topEl.scrollLeft = left; if(mainEl.scrollLeft !== left) mainEl.scrollLeft = left; requestAnimationFrame(()=>{{syncing=false;}}); }}
         topEl.addEventListener('scroll', () => sync(topEl));
         mainEl.addEventListener('scroll', () => sync(mainEl));
-        if(botEl) botEl.addEventListener('scroll', () => sync(botEl));
         setTimeout(matchWidth, 80);
         window.addEventListener('resize', matchWidth);
     }})();
@@ -2763,27 +2855,6 @@ def arrival():
                 <div>
                     <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">색상</label>
                     <input type="color" id="arrivalContentColor" value="#1a2a6c" style="width:44px; height:36px; padding:2px; border:1px solid #cbd5e1; border-radius:6px; cursor:pointer;">
-                </div>
-                <div>
-                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">폰트</label>
-                    <select id="arrivalContentFont" style="padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
-                        <option value="Malgun Gothic">맑은 고딕</option>
-                        <option value="Apple SD Gothic Neo">Apple SD 고딕</option>
-                        <option value="Arial">Arial</option>
-                        <option value="Georgia">Georgia</option>
-                        <option value="Nanum Gothic">나눔고딕</option>
-                    </select>
-                </div>
-                <div>
-                    <label style="display:block; font-size:11px; color:#64748b; margin-bottom:4px;">폰트크기</label>
-                    <select id="arrivalContentFontSize" style="padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;">
-                        <option value="12px">12px</option>
-                        <option value="14px">14px</option>
-                        <option value="16px" selected>16px</option>
-                        <option value="18px">18px</option>
-                        <option value="20px">20px</option>
-                        <option value="24px">24px</option>
-                    </select>
                 </div>
                 <button onclick="addArrivalItem()" class="btn-save" style="padding:8px 18px;">추가</button>
             </div>
@@ -2840,8 +2911,6 @@ def arrival():
             document.getElementById('edit-content-' + id).value = item.content || '';
             document.getElementById('edit-important-' + id).value = item.content_important || '';
             document.getElementById('edit-color-' + id).value = item.content_color || '#1a2a6c';
-            document.getElementById('edit-font-' + id).value = item.content_font || 'Malgun Gothic';
-            document.getElementById('edit-font-size-' + id).value = item.content_font_size || '16px';
         }}
 
         function closeArrivalEdit() {{
@@ -2867,16 +2936,14 @@ def arrival():
                 const content = item.content || '';
                 const contentImportant = item.content_important || '';
                 const contentColor = item.content_color || '#1a2a6c';
-                const contentFont = item.content_font || 'Malgun Gothic';
-                const contentFontSize = item.content_font_size || '16px';
                 const contentEsc = content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                 const importantEsc = contentImportant.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                 const id = item.id;
                 return `<div class="arrival-item" data-id="${{id}}" id="arrival-row-${{id}}" onclick="openArrivalEdit(${{id}})">
                     <div class="countdown" id="cd-${{id}}" data-target="${{targetTime}}"></div>
                     <div class="content-area">
-                        <div class="content-display" id="content-display-${{id}}" style="color:${{contentColor}}; font-family:${{contentFont}}; font-size:${{contentFontSize}};">${{contentEsc || '(내용 없음)'}}</div>
-                        <div id="important-wrap-${{id}}" style="margin-top:4px;">${{contentImportant ? '<span class=\"content-display\" id=\"important-display-' + id + '\" style=\"color:' + contentColor + '; font-family:' + contentFont + '; font-size:' + contentFontSize + '; font-weight:bold;\">★ ' + importantEsc + '</span>' : ''}}</div>
+                        <div class="content-display" id="content-display-${{id}}" style="color:${{contentColor}};">${{contentEsc || '(내용 없음)'}}</div>
+                        <div id="important-wrap-${{id}}" style="margin-top:4px;">${{contentImportant ? '<span class=\"content-display\" id=\"important-display-' + id + '\" style=\"color:' + contentColor + '; font-weight:bold;\">★ ' + importantEsc + '</span>' : ''}}</div>
                         <div class="edit-panel" onclick="event.stopPropagation()">
                             <div style="margin-bottom:8px;">
                                 <label style="font-size:11px; color:#64748b;">시간</label>
@@ -2894,27 +2961,6 @@ def arrival():
                                 <div>
                                     <label style="font-size:11px; color:#64748b;">색상</label>
                                     <input type="color" id="edit-color-${{id}}" style="width:40px; height:32px; margin-left:4px; cursor:pointer;" onchange="saveArrivalStyle(${{id}})">
-                                </div>
-                                <div>
-                                    <label style="font-size:11px; color:#64748b;">폰트</label>
-                                    <select id="edit-font-${{id}}" style="padding:6px 10px; margin-left:4px; border:1px solid #cbd5e1; border-radius:4px;" onchange="saveArrivalStyle(${{id}})">
-                                        <option value="Malgun Gothic">맑은 고딕</option>
-                                        <option value="Apple SD Gothic Neo">Apple SD 고딕</option>
-                                        <option value="Arial">Arial</option>
-                                        <option value="Georgia">Georgia</option>
-                                        <option value="Nanum Gothic">나눔고딕</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label style="font-size:11px; color:#64748b;">폰트크기</label>
-                                    <select id="edit-font-size-${{id}}" style="padding:6px 10px; margin-left:4px; border:1px solid #cbd5e1; border-radius:4px;" onchange="saveArrivalStyle(${{id}})">
-                                        <option value="12px">12px</option>
-                                        <option value="14px">14px</option>
-                                        <option value="16px">16px</option>
-                                        <option value="18px">18px</option>
-                                        <option value="20px">20px</option>
-                                        <option value="24px">24px</option>
-                                    </select>
                                 </div>
                             </div>
                             <button type="button" onclick="closeArrivalEdit()" style="padding:6px 12px; background:#94a3b8; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">닫기</button>
@@ -2992,15 +3038,13 @@ def arrival():
             const content = document.getElementById('arrivalContent').value.trim();
             const contentImportant = document.getElementById('arrivalContentImportant').value.trim();
             const contentColor = document.getElementById('arrivalContentColor').value || '#1a2a6c';
-            const contentFont = document.getElementById('arrivalContentFont').value || 'Malgun Gothic';
-            const contentFontSize = document.getElementById('arrivalContentFontSize').value || '16px';
             fetch('/api/arrival/add', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ target_time: targetTime || null, content: content, content_important: contentImportant, content_color: contentColor, content_font: contentFont, content_font_size: contentFontSize }})
+                body: JSON.stringify({{ target_time: targetTime || null, content: content, content_important: contentImportant, content_color: contentColor }})
             }}).then(r => r.json()).then(res => {{
                 if (res.status === 'success') {{
-                    arrivalItems.push({{ id: res.id, target_time: targetTime || null, content: content, content_important: contentImportant, content_color: contentColor, content_font: contentFont, content_font_size: contentFontSize, order_idx: arrivalItems.length }});
+                    arrivalItems.push({{ id: res.id, target_time: targetTime || null, content: content, content_important: contentImportant, content_color: contentColor, order_idx: arrivalItems.length }});
                     document.getElementById('arrivalTargetTime').value = '';
                     document.getElementById('arrivalContent').value = '';
                     document.getElementById('arrivalContentImportant').value = '';
@@ -3052,9 +3096,7 @@ def arrival():
                     if (wrap) {{
                         const esc = (value || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                         const color = item.content_color || '#1a2a6c';
-                        const font = item.content_font || 'Malgun Gothic';
-                        const fontSize = item.content_font_size || '16px';
-                        wrap.innerHTML = value ? '<span class=\"content-display\" id=\"important-display-' + id + '\" style=\"color:' + color + '; font-family:' + font + '; font-size:' + fontSize + '; font-weight:bold;\">★ ' + esc + '</span>' : '';
+                        wrap.innerHTML = value ? '<span class=\"content-display\" id=\"important-display-' + id + '\" style=\"color:' + color + '; font-weight:bold;\">★ ' + esc + '</span>' : '';
                     }}
                 }}
             }});
@@ -3062,20 +3104,18 @@ def arrival():
 
         function saveArrivalStyle(id) {{
             const color = document.getElementById('edit-color-' + id).value;
-            const font = document.getElementById('edit-font-' + id).value;
-            const fontSize = document.getElementById('edit-font-size-' + id).value;
             fetch('/api/arrival/update', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ id: id, content_color: color, content_font: font, content_font_size: fontSize }})
+                body: JSON.stringify({{ id: id, content_color: color }})
             }}).then(r => r.json()).then(res => {{
                 if (res.status === 'success') {{
                     const item = arrivalItems.find(i => i.id == id);
-                    if (item) {{ item.content_color = color; item.content_font = font; item.content_font_size = fontSize; }}
+                    if (item) item.content_color = color;
                     const displayEl = document.getElementById('content-display-' + id);
                     const importantEl = document.getElementById('important-display-' + id);
-                    if (displayEl) {{ displayEl.style.color = color; displayEl.style.fontFamily = font; displayEl.style.fontSize = fontSize; }}
-                    if (importantEl) {{ importantEl.style.color = color; importantEl.style.fontFamily = font; importantEl.style.fontSize = fontSize; }}
+                    if (displayEl) displayEl.style.color = color;
+                    if (importantEl) importantEl.style.color = color;
                 }}
             }});
         }}
@@ -3173,7 +3213,15 @@ def manage_drivers():
             except Exception as e:
                 err_msg = f"<p style='color:red; margin-bottom:15px;'>업로드 오류: {str(e)}<br>엑셀(.xlsx, .xls) 또는 CSV 파일만 업로드 가능합니다.</p>"
     
-    # 출력 컬럼 정의 (은행명, 예금주 포함)
+    page = max(1, safe_int(request.args.get('page'), 1))
+    per_page_arg = safe_int(request.args.get('per_page'), 50)
+    per_page = per_page_arg if per_page_arg in (20, 50, 100) else 50
+    total_drivers = len(drivers_db)
+    total_pages = max(1, (total_drivers + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start_idx = (page - 1) * per_page
+    page_drivers = drivers_db[start_idx:start_idx + per_page]
+    pagination_driver_html = "".join([f'<a href="/manage_drivers?page={i}&per_page={per_page}" class="page-btn {"active" if i == page else ""}">{i}</a>' for i in range(1, total_pages + 1)])
     DISPLAY_DRIVER_COLS = ["기사명", "차량번호", "연락처", "은행명", "계좌번호", "예금주", "사업자번호", "사업자", "개인/고정", "메모"]
     def _driver_row(r):
         did = r.get('id', '')
@@ -3181,19 +3229,28 @@ def manage_drivers():
         btns = f'<td style="white-space:nowrap;"><button type="button" class="btn-edit" onclick="editDriver({did})" style="padding:4px 8px; font-size:11px; margin-right:4px;">수정</button><button type="button" class="btn-status bg-red" onclick="deleteDriver({did})" style="padding:4px 8px; font-size:11px;">삭제</button></td>'
         cells = ''.join([f'<td>{r.get(c, "")}</td>' for c in DISPLAY_DRIVER_COLS])
         return f'<tr class="filter-row" data-id="{did}" data-search="{search}">{btns}{cells}</tr>'
-    rows_html = "".join([_driver_row(r) for r in drivers_db])
+    rows_html = "".join([_driver_row(r) for r in page_drivers])
     content = f"""<div class="section"><h2>🚚 기사 관리 (은행/계좌 정보)</h2>
     {err_msg}
     <form method="post" enctype="multipart/form-data" style="margin-bottom:15px;">
         <input type="file" name="file"> <button type="submit" class="btn-save">엑셀 업로드</button>
     </form>
-    <div style="margin-bottom:12px;">
+    <div style="margin-bottom:12px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <input type="text" id="driverFilter" placeholder="기사명, 차량번호, 연락처 등 검색..." style="width:280px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" oninput="filterTable('driverFilter', 'driverTableBody')">
-        <span id="driverFilterCount" style="font-size:12px; color:#64748b; margin-left:8px;"></span>
+        <span id="driverFilterCount" style="font-size:12px; color:#64748b;"></span>
+        <span style="margin-left:8px;">출력</span>
+        <select onchange="location.href='/manage_drivers?page=1&per_page='+this.value" style="padding:6px 10px; border:1px solid #d0d7de; border-radius:4px; font-size:13px;">
+            <option value="20" {"selected" if per_page == 20 else ""}>20</option>
+            <option value="50" {"selected" if per_page == 50 else ""}>50</option>
+            <option value="100" {"selected" if per_page == 100 else ""}>100</option>
+        </select>
+        <span style="font-size:12px; color:#666;">개씩</span>
+        <span style="font-size:12px; color:#64748b;">(총 {total_drivers}명)</span>
     </div>
     <div class="scroll-top" id="driverScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in DISPLAY_DRIVER_COLS])}</tr></tbody></table></div>
     <div class="scroll-x" id="driverScroll"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody id="driverTableBody">{rows_html}</tbody></table></div>
     <div class="scroll-top" id="driverScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th>{c}</th>" for c in DISPLAY_DRIVER_COLS])}</tr></thead><tbody><tr><td>-</td>{"".join(["<td>-</td>" for _ in DISPLAY_DRIVER_COLS])}</tr></tbody></table></div>
+    <div class="pagination" style="margin-top:12px;">{pagination_driver_html}</div>
     <div id="driverEditModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5);">
         <div style="background:white; max-width:600px; margin:40px auto; padding:24px; border-radius:10px; max-height:90vh; overflow-y:auto;">
             <h3 style="margin:0 0 20px 0;">기사 수정</h3>
