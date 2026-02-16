@@ -205,28 +205,6 @@ CALC_READONLY_KEYS = {'sup_val', 'vat1', 'total1', 'vat2', 'total2', 'net_profit
 # 순수입·부가세: 사용 안 함, 회색 처리
 UNUSED_GRAY_KEYS = {'net_profit', 'vat_final'}
 
-# 통합장부 엑셀 업로드: 첫 열 "관리" 제외, 나머지 열 순서대로 매핑할 키
-LEDGER_EXCEL_HEADERS = [
-    "관리", "비고", "요청내용", "구분", "우편/문자/팩스 발송 주소,연락처", "완료", "추가요청사항", "완료",
-    "오더일", "배차일", "노선", "기사명", "차량번호", "검색용", "연락처", "비고", "사업자구분", "업체명",
-    "담당자연락처", "담당자", "연락처", "사업자번호", "사업장주소", "업종", "업태", "메일주소", "도메인", "사업자",
-    "발행구분", "업체비고", "결제참고사항", "결제예정일", "개인/고정", "입금일", "업체 현금확인", "수수료", "선착불", "업체운임",
-    "공급가액", "부가세", "합계", "입금자명", "입금내역", "계산서발행일", "발행사업자", "폰", "계좌번호", "연락처",
-    "사업자번호", "사업자", "지급일", "기사 현금확인", "기사운임", "부가세", "합계", "작성일자", "발행일", "계산서확인",
-    "발행사업자", "순수입", "부가세", "계산서사진", "운송장사진", "기사은행명", "기사예금주", "운송우편확인", "우편확인일",
-    "업체 월말합산", "기사 월말합산"
-]
-LEDGER_EXCEL_KEYS = [
-    None, "memo1", "req_type", "category", "send_to", "is_done1", "req_add", "is_done2",
-    "order_dt", "dispatch_dt", "route", "d_name", "c_num", "search_num", "d_phone", "memo2",
-    "pay_to", "client_name", "c_mgr_phone", "c_mgr_name", "c_phone", "biz_num", "biz_addr", "biz_type1", "biz_type2",
-    "mail", "domain", "biz_owner", "biz_issue", "client_memo", "pay_memo", "pay_due_dt", "log_move", "in_dt", "pay_method_client",
-    "comm", "pre_post", "fee", "sup_val", "vat1", "total1", "in_name", "month_val", "tax_dt", "tax_biz",
-    "tax_phone", "bank_acc", "tax_contact", "tax_biz_num", "tax_biz_name", "out_dt", "pay_method_driver", "fee_out", "vat2", "total2",
-    "write_dt", "issue_dt", "tax_chk", "tax_biz2", "net_profit", "vat_final", "tax_img", "ship_img", "d_bank_name", "d_bank_owner",
-    "is_mail_done", "mail_dt", "month_end_client", "month_end_driver"
-]
-
 def ledger_col_class(k):
     """컬럼별 배경 클래스: 기사=연한빨강, 업체=파랑, 미사용=회색"""
     if k in UNUSED_GRAY_KEYS: return 'col-unused'
@@ -713,15 +691,8 @@ BASE_HTML = """
             return true;
         }
 
-        var lastOrderSaveTime = 0;
         function saveLedger(formId) {
             if (!validateLedgerForm(formId)) return;
-            var now = Date.now();
-            if (now - lastOrderSaveTime < 2000) {
-                alert('오더 생성은 2초에 한 번만 가능합니다.');
-                return;
-            }
-            lastOrderSaveTime = now;
             const form = document.getElementById(formId);
             const formData = new FormData(form);
             const data = {};
@@ -876,6 +847,10 @@ function loadLedgerList() {
                 if(key === 'month_end_client' || key === 'month_end_driver') {
                     let checked = (val === '1' || val === 'Y');
                     return `<td${tdCls} style="text-align:center;"><input type="checkbox" ${checked ? 'checked' : ''} onchange="changeStatus(${item.id}, '${key}', this.checked ? '1' : ''); setTimeout(function(){ loadLedgerList(); }, 200);" title="${key==='month_end_client'?'업체 월말합산':'기사 월말합산'}"></td>`;
+                }
+                if(key === 'fee' || key === 'fee_out') {
+                    let safeVal = (val === null || val === undefined) ? '' : String(val).replace(/"/g, '&quot;');
+                    return `<td${tdCls} style="text-align:right;"><input type="text" inputmode="decimal" value="${safeVal}" style="width:80px; padding:4px; font-size:12px; text-align:right;" oninput="this.value=this.value.replace(/[^0-9.-]/g,'').replace(/(\\..*)\\./g,'$1');" onblur="var v=this.value.trim(); if(v!=='' && !isNaN(parseFloat(v))) { fetch('/api/update_status', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id:${item.id}, key:'${key}', value:v})}).then(r=>r.json()).then(res=>{if(res.status==='success') loadLedgerList();}); }" placeholder="0"></td>`;
                 }
                 return `<td${tdCls}>${val}</td>`;
             }).join('')}
@@ -1196,7 +1171,6 @@ def index():
                     <tbody>
                         <tr>
                             <td>-</td>
-                            # 모든 input에 id 속성을 추가하여 자바스크립트가 데이터를 채울 수 있게 합니다.
                             {"".join([f"<td{_col_attr(c['k'])}><input {ledger_input_attrs(c)}></td>" for c in FULL_COLUMNS])}
                         </tr>
                     </tbody>
@@ -1232,6 +1206,7 @@ def index():
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
         <input type="text" id="ledgerSearch" class="search-bar" placeholder="기사명, 업체명, 노선 등 검색..." onkeyup="filterLedger()">
         <a href="/settlement" style="color:#1a2a6c; font-weight:600; text-decoration:none; white-space:nowrap;">정산관리 바로가기 →</a>
+        <button type="button" class="btn-edit" onclick="var s=document.getElementById('startDate').value; var e=document.getElementById('endDate').value; var c=document.getElementById('filterMonthEndClient').checked?'1':''; var d=document.getElementById('filterMonthEndDriver').checked?'1':''; var u='/api/ledger_excel?start='+encodeURIComponent(s)+'&end='+encodeURIComponent(e)+'&month_end_client='+c+'&month_end_driver='+d; window.location.href=u;">엑셀 다운로드</button>
         </div>
         <div class="scroll-sticky-wrap">
         <div class="scroll-x scroll-x-ledger" id="ledgerListScroll"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
@@ -1273,7 +1248,8 @@ def settlement():
     q_status = request.args.get('status', ''); q_name = request.args.get('name', '')
     q_start = request.args.get('start', ''); q_end = request.args.get('end', '')
     page = max(1, safe_int(request.args.get('page'), 1))
-    per_page = 50
+    per_page_arg = safe_int(request.args.get('per_page'), 20)
+    per_page = per_page_arg if per_page_arg in (20, 50, 100) else 20
     
     rows = conn.execute("SELECT * FROM ledger ORDER BY dispatch_dt DESC").fetchall(); conn.close()
     
@@ -1425,7 +1401,7 @@ def settlement():
             </td>
             <td>{row['client_name']}</td><td>{tax_cell}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{issue_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td><td style="text-align:center;">{month_end_client_cell}</td><td style="text-align:center;">{month_end_driver_cell}</td></tr>"""
     
-    pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&start={q_start}&end={q_end}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
+    pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&start={q_start}&end={q_end}&per_page={per_page}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
 
     content = f"""<div class="section page-settlement"><h2>정산 관리 (기간 및 실시간 필터)</h2>
     <form class="filter-box" method="get" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -1443,6 +1419,13 @@ def settlement():
             <option value="done_out" {'selected' if q_status=='done_out' else ''}>지급완료</option>
         </select>
         <input type="text" name="name" value="{q_name}" placeholder="업체/기사 검색">
+        <span style="margin-left:8px;">출력</span>
+        <select name="per_page" onchange="this.form.submit()" style="padding:6px 10px; border:1px solid #d0d7de; border-radius:4px; font-size:13px;">
+            <option value="20" {"selected" if per_page==20 else ""}>20</option>
+            <option value="50" {"selected" if per_page==50 else ""}>50</option>
+            <option value="100" {"selected" if per_page==100 else ""}>100</option>
+        </select>
+        <span style="font-size:12px; color:#666;">개씩</span>
         <button type="submit" class="btn-save">조회</button>
         <button type="button" onclick="location.href='/settlement'" class="btn-status bg-gray">초기화</button>
     </form>
@@ -1523,9 +1506,15 @@ def settlement():
 @login_required 
 def statistics():
     conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
-    # 1. 모든 필터 파라미터 정의
+    # 1. 모든 필터 파라미터 정의 (기본: 해당 월만 표시)
     q_start = request.args.get('start', '')
     q_end = request.args.get('end', '')
+    if not q_start and not q_end:
+        now = now_kst()
+        q_start = now.replace(day=1).strftime('%Y-%m-%d')
+        # 해당 월 마지막 날
+        next_month = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+        q_end = (next_month - timedelta(days=1)).strftime('%Y-%m-%d')
     q_client = request.args.get('client', '').strip()
     q_driver = request.args.get('driver', '').strip()
     q_status = request.args.get('status', '')
@@ -2373,6 +2362,52 @@ def get_ledger():
     return jsonify({"data": page_rows, "total_pages": total_pages, "current_page": page})
 
 
+@app.route('/api/ledger_excel')
+@login_required
+def ledger_excel():
+    """통합장부 전체(또는 현재 필터) 엑셀 다운로드"""
+    start_dt = request.args.get('start', '')
+    end_dt = request.args.get('end', '')
+    month_end_client = request.args.get('month_end_client', '')
+    month_end_driver = request.args.get('month_end_driver', '')
+    conn = sqlite3.connect('ledger.db', timeout=15)
+    conn.row_factory = sqlite3.Row
+    query = "SELECT * FROM ledger"
+    params = []
+    conditions = []
+    if start_dt and end_dt:
+        conditions.append(" order_dt BETWEEN ? AND ?")
+        params.extend([start_dt, end_dt])
+    if month_end_client:
+        conditions.append(" (month_end_client = '1' OR month_end_client = 'Y')")
+    if month_end_driver:
+        conditions.append(" (month_end_driver = '1' OR month_end_driver = 'Y')")
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY id DESC"
+    all_rows = conn.execute(query, params).fetchall()
+    conn.close()
+    # 한글 헤더 + 계산 보정
+    col_keys = [c['k'] for c in FULL_COLUMNS]
+    headers = ['id'] + [c['n'] for c in FULL_COLUMNS]
+    rows = []
+    for r in all_rows:
+        d = dict(r)
+        calc_vat_auto(d)
+        driver_fixed = get_driver_fixed_type(drivers_db, d.get('d_name'), d.get('c_num'))
+        if driver_fixed is not None:
+            d['log_move'] = driver_fixed
+        row = [d.get('id', '')] + [d.get(k, '') or '' for k in col_keys]
+        rows.append(row)
+    df = pd.DataFrame(rows if rows else [[]], columns=headers)
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as w:
+        df.to_excel(w, index=False)
+    out.seek(0)
+    fname = f"통합장부_{now_kst().strftime('%Y%m%d_%H%M')}.xlsx"
+    return send_file(out, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fname)
+
+
 @app.route('/api/get_ledger_row/<int:row_id>')
 @login_required
 def get_ledger_row(row_id):
@@ -2490,6 +2525,14 @@ def update_status():
             d = dict(row)
             calc_vat_auto(d)
             for k in ('vat1', 'total1', 'vat2', 'total2', 'net_profit', 'vat_final'):
+                cursor.execute(f"UPDATE ledger SET [{k}] = ? WHERE id = ?", (d.get(k, ''), row_id))
+    # 업체운임(fee)·기사운임(fee_out) 변경 시 공급가액·부가세·합계 재계산
+    if key in ('fee', 'fee_out'):
+        row = cursor.execute("SELECT * FROM ledger WHERE id = ?", (row_id,)).fetchone()
+        if row:
+            d = dict(row)
+            calc_vat_auto(d)
+            for k in ('sup_val', 'vat1', 'total1', 'vat2', 'total2', 'net_profit', 'vat_final'):
                 cursor.execute(f"UPDATE ledger SET [{k}] = ? WHERE id = ?", (d.get(k, ''), row_id))
     log_details = f"[{display_name}] 항목이 '{data.get('value')}'(으)로 변경됨"
     cursor.execute("INSERT INTO activity_logs (action, target_id, details) VALUES (?, ?, ?)",
