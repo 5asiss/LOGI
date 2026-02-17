@@ -1,5 +1,51 @@
 # 배포 시 보안 설정 안내
 
+---
+
+## GitHub Desktop으로 웹 배포하기 (요약)
+
+코드를 **수정 → GitHub Desktop에서 커밋 & 푸시**하면 웹 사이트가 자동으로 갱신되도록 할 수 있습니다.
+
+### 1단계: GitHub 저장소 준비
+
+- GitHub에서 이 프로젝트용 저장소를 만듭니다 (이미 있으면 생략).
+- GitHub Desktop에서 **File → Clone repository** 또는 **Add → Add Existing Repository**로 이 폴더(`logi`)를 연결하고, 원격을 해당 GitHub 저장소로 설정합니다.
+
+### 2단계: Render에서 서비스 연결
+
+1. [Render](https://render.com)에 가입 후 로그인합니다.
+2. **Dashboard → New + → Web Service**를 선택합니다.
+3. **Connect a repository**에서 GitHub 계정을 연결하고, 이 프로젝트 저장소(`logi`)를 선택합니다.
+4. 저장소 루트에 `render.yaml`이 있으면 **Blueprint**로 생성할 수 있습니다.  
+   - **Blueprint** 사용: Dashboard에서 **New + → Blueprint** → 이 저장소 선택 → `render.yaml` 기준으로 서비스가 생성됩니다.  
+   - **직접 설정**: Repository 연결 후 아래를 입력합니다.  
+     - **Build Command**: `pip install -r requirements.txt`  
+     - **Start Command**: `gunicorn app:app --bind 0.0.0.0:$PORT`
+
+### 3단계: 환경변수 설정 (필수)
+
+Render 대시보드에서 해당 Web Service → **Environment** 탭으로 이동해 다음을 설정합니다.
+
+| 변수 | 필수 | 설명 |
+|------|------|------|
+| `FLASK_SECRET_KEY` | 예 | Render에서 **Generate** 버튼으로 자동 생성 권장 |
+| `ADMIN_PW` | 예 | 관리자 로그인 비밀번호 (1234 말고 강한 비밀번호 사용) |
+| `ADMIN_ID` | 선택 | 기본값 `admin` |
+| `HTTPS` | 권장 | `1` 입력 시 세션 쿠키 Secure (Render는 HTTPS 제공) |
+
+### 4단계: 배포 및 이후 흐름
+
+- **Deploy** 버튼으로 첫 배포를 실행합니다. 배포가 끝나면 Render가 부여한 URL(예: `https://logi.onrender.com`)로 접속할 수 있습니다.
+- **이후 코드 수정 시**: 로컬에서 수정 → **GitHub Desktop**에서 **Commit** → **Push origin** 하면 Render가 자동으로 재배포합니다. 별도 FTP나 서버 접속 없이 웹에 반영됩니다.
+
+### 주의사항 (웹 배포)
+
+- **데이터 유지**: Render 무료/스탠다드 플랜은 재배포 시 디스크가 초기화됩니다. `ledger.db`와 업로드 파일(`static/evidences/`)은 배포할 때마다 비워질 수 있으므로, 중요 데이터는 정기 백업하거나 Render **Disk**(유료)를 붙여 사용하세요.
+- **비밀번호**: `.env`는 Git에 올라가지 않습니다. 웹 서버 비밀번호·시크릿은 반드시 Render **Environment**에서만 설정하세요.
+- **무료 플랜**: 요청이 없을 때 서비스가 슬립 모드로 들어갑니다. 첫 접속 시 수십 초 정도 걸릴 수 있습니다.
+
+---
+
 ## 필수 환경변수 (서버 실행 전 설정)
 
 | 변수명 | 설명 | 예시 |
@@ -12,7 +58,7 @@
 
 | 변수명 | 설명 |
 |--------|------|
-| `PORT` | 서버 포트, 기본 5000 |
+| `PORT` | 서버 포트, 기본 5001 (Render 등에서는 자동 지정) |
 | `FLASK_DEBUG` | `1`/`true` 일 때만 디버그 모드. **배포 시 미설정 또는 0** |
 | `HTTPS` | `1`/`true` 이면 세션 쿠키에 Secure 플래그 적용 (HTTPS 사용 시 설정) |
 

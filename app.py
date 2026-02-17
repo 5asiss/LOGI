@@ -10,9 +10,10 @@ except ImportError:
     pass
 import io
 import json
+import os
 import re
 import sqlite3
-import os
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from urllib.parse import quote
@@ -91,7 +92,6 @@ def to_kst_str(ts_val):
         return dt_kst.strftime('%Y-%m-%d %H:%M:%S')
     except Exception:
         return str(ts_val)
-from collections import defaultdict
 
 app = Flask(__name__)
 
@@ -300,8 +300,10 @@ def init_db():
     existing_ledger_cols = [info[1] for info in cursor.fetchall()]
     for k in keys:
         if k not in existing_ledger_cols:
-            try: cursor.execute(f"ALTER TABLE ledger ADD COLUMN '{k}' TEXT")
-            except: pass
+            try:
+                cursor.execute(f"ALTER TABLE ledger ADD COLUMN '{k}' TEXT")
+            except Exception:
+                pass
 
     # 기사 테이블 컬럼 보강
     cursor.execute("""
@@ -354,7 +356,8 @@ def init_db():
             existing = [r[1] for r in cursor.fetchall()]
             if col not in existing:
                 cursor.execute(f"ALTER TABLE arrival_status ADD COLUMN {col} TEXT")
-        except: pass
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()
@@ -889,17 +892,19 @@ function loadLedgerList() {
                 if(['in_dt','tax_dt','out_dt','mail_dt','issue_dt'].includes(key)) {
                     let label = key==='in_dt'?'입금일':key==='tax_dt'?'계산서발행일':key==='out_dt'?'지급일':key==='mail_dt'?'우편확인일':'기사계산서발행일';
                     let today = new Date().toISOString().slice(0,10);
-                    let displayVal = key==='tax_dt' ? (item.tax_chk==='발행완료' || val ? val : '') : val;
-                    let hasVal = !!displayVal || (key==='mail_dt' && item.is_mail_done==='확인완료') || (key==='issue_dt' && !!(item.issue_dt || val));
+                    let taxChkOk = (String(item.tax_chk||'').trim()==='발행완료');
+                    let mailOk = (String(item.is_mail_done||'').trim()==='확인완료');
+                    let displayVal = key==='tax_dt' ? (taxChkOk || val ? val : '') : val;
+                    let hasVal = !!displayVal || (key==='mail_dt' && mailOk) || (key==='issue_dt' && !!(item.issue_dt || val));
                     let toggleVal = hasVal ? "''" : "'"+today+"'";
                     let btnHtml, onclickStr, btnLabel;
                     if(key==='tax_dt') {
-                        let taxToggle = item.tax_chk==='발행완료' ? "''" : "'발행완료'";
+                        let taxToggle = taxChkOk ? "''" : "'발행완료'";
                         onclickStr = `changeStatus(${item.id}, 'tax_chk', ${taxToggle})`;
-                        btnLabel = (item.tax_chk==='발행완료' || val) ? '계산서 발행확인' : '미발행';
+                        btnLabel = (taxChkOk || val) ? '계산서 발행확인' : '미발행';
                     } else if(key==='mail_dt') {
                         onclickStr = `changeStatus(${item.id}, 'mail_dt', ${toggleVal})`;
-                        btnLabel = (item.is_mail_done==='확인완료' || val) ? '확인완료' : '미확인';
+                        btnLabel = (mailOk || val) ? '확인완료' : '미확인';
                     } else if(key==='issue_dt') {
                         onclickStr = `changeStatus(${item.id}, 'issue_dt', ${toggleVal})`;
                         btnLabel = (displayVal || item.issue_dt) ? '확인완료' : '설정';
@@ -1379,7 +1384,7 @@ def index():
             <span style="font-size:12px; color:#666;">개씩</span>
         </div>
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-        <input type="text" id="ledgerSearch" class="search-bar" placeholder="오더고유번호(n01), 기사명, 업체명, 노선 등 검색..." onkeyup="filterLedger()">
+        <input type="text" id="ledgerSearch" class="search-bar" placeholder="오더고유번호(n01), 기사명, 업체명, 차량번호, 노선 등 검색..." onkeyup="filterLedger()">
         <a href="/settlement" style="color:#1a2a6c; font-weight:600; text-decoration:none; white-space:nowrap;">정산관리 바로가기 →</a>
         <button type="button" class="btn-edit" onclick="var s=document.getElementById('startDate').value; var e=document.getElementById('endDate').value; var c=document.getElementById('filterMonthEndClient').checked?'1':''; var d=document.getElementById('filterMonthEndDriver').checked?'1':''; var u='/api/ledger_excel?start='+encodeURIComponent(s)+'&end='+encodeURIComponent(e)+'&month_end_client='+c+'&month_end_driver='+d; window.location.href=u;">엑셀 다운로드</button>
         </div>
@@ -1464,14 +1469,14 @@ def settlement():
             num_str = name_part[1:].lstrip('0') or '0'
             if num_str.isdigit():
                 id_val = int(num_str)
-                conditions.append("(client_name LIKE ? OR d_name LIKE ? OR id = ?)")
-                params.extend([f"%{name_part}%", f"%{name_part}%", id_val])
+                conditions.append("(client_name LIKE ? OR d_name LIKE ? OR COALESCE(c_num,'') LIKE ? OR id = ?)")
+                params.extend([f"%{name_part}%", f"%{name_part}%", f"%{name_part}%", id_val])
             else:
-                conditions.append("(client_name LIKE ? OR d_name LIKE ?)")
-                params.extend([f"%{name_part}%", f"%{name_part}%"])
+                conditions.append("(client_name LIKE ? OR d_name LIKE ? OR COALESCE(c_num,'') LIKE ?)")
+                params.extend([f"%{name_part}%", f"%{name_part}%", f"%{name_part}%"])
         else:
-            conditions.append("(client_name LIKE ? OR d_name LIKE ?)")
-            params.extend([f"%{name_part}%", f"%{name_part}%"])
+            conditions.append("(client_name LIKE ? OR d_name LIKE ? OR COALESCE(c_num,'') LIKE ?)")
+            params.extend([f"%{name_part}%", f"%{name_part}%", f"%{name_part}%"])
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY dispatch_dt DESC"
@@ -1498,14 +1503,16 @@ def settlement():
                 try:
                     d_dt = datetime.fromisoformat(dispatch_dt_str.replace(' ', 'T'))
                     if today_naive > d_dt + timedelta(days=30): is_over_30 = True
-                except: pass
+                except Exception:
+                    pass
             
             is_due_passed = False
             if pay_due_dt:
                 try:
                     p_due = datetime.strptime(pay_due_dt, "%Y-%m-%d")
                     if today.date() > p_due.date(): is_due_passed = True
-                except: pass
+                except Exception:
+                    pass
             
             # 조건부 미수 판단 (선착불/결제예정일 없는 초기 상태)
             if not pre_post and not in_dt and not pay_due_dt:
@@ -1532,17 +1539,16 @@ def settlement():
         if q_start and order_dt < q_start: continue
         if q_end and order_dt > q_end: continue
         
-        # 이름 필터 (업체/기사명 + 오더고유번호 n01, n02 등)
+        # 이름 필터 (업체/기사명 + 차량번호 + 오더고유번호 n01, n02 등)
         if q_name:
             q = q_name.strip().lower()
             in_client = q in str(row['client_name'] or '').lower()
             in_driver = q in str(row['d_name'] or '').lower()
+            in_c_num = q in str(row.get('c_num') or '').lower()
             order_no = ('n' + str(row['id']).zfill(2)).lower()
             match_order = (q == order_no or q in order_no or order_no in q)
-            if not (in_client or in_driver or match_order):
+            if not (in_client or in_driver or in_c_num or match_order):
                 continue
-
-        # 상태 필터
 
         # 상태 필터
         if q_status:
@@ -1571,7 +1577,8 @@ def settlement():
         # 토글 변수 설정 (데이터가 있으면 공백으로 보내서 미수/미지급 처리)
         in_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not row['in_dt'] else "''"
         out_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not row['out_dt'] else "''"
-        tax_chk_toggle = "''" if row.get('tax_chk') == '발행완료' else "'발행완료'"
+        tax_chk_ok = (str(row.get('tax_chk') or '').strip() == '발행완료')
+        tax_chk_toggle = "''" if tax_chk_ok else "'발행완료'"
         mail_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not row.get('mail_dt') else "''"
 
         in_dt_val = row.get('in_dt') or ''
@@ -1579,20 +1586,21 @@ def settlement():
         out_dt_val = row.get('out_dt') or ''
         mail_dt_val = row.get('mail_dt') or ''
         in_dt_span = f'<span style="font-size:10px; color:#1976d2;">{in_dt_val}</span>' if in_dt_val else ''
-        tax_dt_span = f'<span style="font-size:10px; color:#1976d2;">{tax_dt_val}</span>' if tax_dt_val and row.get('tax_chk')=='발행완료' else ''
+        tax_dt_span = f'<span style="font-size:10px; color:#1976d2;">{tax_dt_val}</span>' if tax_dt_val and tax_chk_ok else ''
         out_dt_span = f'<span style="font-size:10px; color:#1976d2;">{out_dt_val}</span>' if out_dt_val else ''
         mail_dt_span = f'<span style="font-size:10px; color:#1976d2;">{mail_dt_val}</span>' if mail_dt_val else ''
-        tax_label = '계산서 발행확인' if (tax_dt_val or row.get('tax_chk')=='발행완료') else '미발행'
+        tax_label = '계산서 발행확인' if (tax_dt_val or tax_chk_ok) else '미발행'
         misu_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{in_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'in_dt\', this.value)">{in_dt_span}<button class="btn-status {row["m_cl"]}" onclick="changeStatus({row["id"]}, \'in_dt\', {in_dt_toggle})">{row["m_st"]}</button></div>'
-        tax_issued_btn = f'<button class="btn-status {"bg-green" if row.get("tax_chk")=="발행완료" else "bg-orange"}" onclick="changeStatus({row["id"]}, \'tax_chk\', {tax_chk_toggle})">{tax_label}</button>'
+        tax_issued_btn = f'<button class="btn-status {"bg-green" if tax_chk_ok else "bg-orange"}" onclick="changeStatus({row["id"]}, \'tax_chk\', {tax_chk_toggle})">{tax_label}</button>'
         tax_biz_val = (row.get('tax_biz') or '').strip()
         tax_biz_span = f'<span style="font-size:10px; color:#666;">{tax_biz_val}</span>' if tax_biz_val else ''
         tax_cell = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{tax_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'tax_dt\', this.value)">{tax_dt_span}<div>{tax_issued_btn}</div>{tax_biz_span}</div>'
         pay_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{out_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'out_dt\', this.value)">{out_dt_span}<button class="btn-status {row["p_cl"]}" onclick="changeStatus({row["id"]}, \'out_dt\', {out_dt_toggle})">{row["p_st"]}</button></div>'
         
-        mail_val = row.get('is_mail_done', '미확인')
-        mail_color = "bg-green" if mail_val == "확인완료" else "bg-orange"
-        mail_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{mail_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'mail_dt\', this.value)">{mail_dt_span}<button class="btn-status {mail_color}" onclick="changeStatus({row["id"]}, \'mail_dt\', {mail_dt_toggle})">{mail_val if mail_val else "미확인"}</button></div>'
+        mail_ok = (str(row.get('is_mail_done') or '').strip() == '확인완료')
+        mail_val = '확인완료' if mail_ok else '미확인'
+        mail_color = "bg-green" if mail_ok else "bg-orange"
+        mail_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{mail_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'mail_dt\', this.value)">{mail_dt_span}<button class="btn-status {mail_color}" onclick="changeStatus({row["id"]}, \'mail_dt\', {mail_dt_toggle})">{mail_val}</button></div>'
 
         issue_dt_val = (row.get('issue_dt') or '').strip()
         issue_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not issue_dt_val else "''"
@@ -1656,7 +1664,7 @@ def settlement():
             <option value="done_in" {'selected' if q_status=='done_in' else ''}>수금완료</option>
             <option value="done_out" {'selected' if q_status=='done_out' else ''}>지급완료</option>
         </select>
-        <input type="text" name="name" value="{q_name}" placeholder="오더고유번호(n01), 업체/기사 검색">
+        <input type="text" name="name" value="{q_name}" placeholder="오더고유번호(n01), 업체/기사/차량번호 검색">
         <span style="margin-left:8px;">출력</span>
         <select name="per_page" onchange="this.form.submit()" style="padding:6px 10px; border:1px solid #d0d7de; border-radius:4px; font-size:13px;">
             <option value="20" {"selected" if per_page==20 else ""}>20</option>
@@ -2819,8 +2827,8 @@ def get_ledger():
     # 검색어: 전체 오더에서 검색 후 페이지네이션
     if q_search:
         q_like = "%" + q_search.replace("%", "\\%").replace("_", "\\_") + "%"
-        q_parts = ["client_name LIKE ?", "d_name LIKE ?", "route LIKE ?", "COALESCE(memo1,'') LIKE ?", "COALESCE(memo2,'') LIKE ?", "COALESCE(req_add,'') LIKE ?"]
-        params.extend([q_like] * 6)
+        q_parts = ["client_name LIKE ?", "d_name LIKE ?", "COALESCE(c_num,'') LIKE ?", "route LIKE ?", "COALESCE(memo1,'') LIKE ?", "COALESCE(memo2,'') LIKE ?", "COALESCE(req_add,'') LIKE ?"]
+        params.extend([q_like] * 7)
         if q_search.lower().startswith('n'):
             num_str = q_search[1:].lstrip('0') or '0'
             if num_str.isdigit():
@@ -3010,7 +3018,14 @@ def update_status():
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     display_name = next((col['n'] for col in FULL_COLUMNS if col['k'] == key), key)
-    cursor.execute(f"UPDATE ledger SET [{key}] = ? WHERE id = ?", (data.get('value'), row_id))
+    val = data.get('value')
+    # tax_chk: 공백/None 정규화 — '발행완료'만 녹색으로 인식되도록 저장값 통일
+    if key == 'tax_chk':
+        val = '발행완료' if (val and str(val).strip() == '발행완료') else ''
+    # is_mail_done: 공백/None 정규화 — '확인완료'만 녹색으로 인식되도록 저장값 통일
+    if key == 'is_mail_done':
+        val = '확인완료' if (val and str(val).strip() == '확인완료') else '미확인'
+    cursor.execute(f"UPDATE ledger SET [{key}] = ? WHERE id = ?", (val, row_id))
     # 개인/고정: 기사관리와 연동 — 장부에서 변경 시 해당 기사의 기사관리(개인/고정)도 동기화
     if key == 'log_move':
         row = cursor.execute("SELECT d_name, c_num FROM ledger WHERE id = ?", (row_id,)).fetchone()
@@ -3022,14 +3037,14 @@ def update_status():
                                (row[0] or '', row[1] or '', str(data.get('value', '')).strip()))
     # 계산서 발행완료 시 계산서발행일(tax_dt) 동시 설정, 취소 시 비움
     if key == 'tax_chk':
-        tax_dt_val = now_kst().strftime('%Y-%m-%d') if data.get('value') == '발행완료' else ''
+        tax_dt_val = now_kst().strftime('%Y-%m-%d') if (val == '발행완료') else ''
         cursor.execute("UPDATE ledger SET tax_dt = ? WHERE id = ?", (tax_dt_val, row_id))
     # tax_dt 직접 입력 시 tax_chk 발행완료
     if key == 'tax_dt':
-        cursor.execute("UPDATE ledger SET tax_chk = ? WHERE id = ?", ('발행완료' if data.get('value') else '', row_id))
+        cursor.execute("UPDATE ledger SET tax_chk = ? WHERE id = ?", ('발행완료' if (data.get('value') and str(data.get('value')).strip()) else '', row_id))
     # mail_dt 직접 입력 시 is_mail_done 확인완료
     if key == 'mail_dt':
-        cursor.execute("UPDATE ledger SET is_mail_done = ? WHERE id = ?", ('확인완료' if data.get('value') else '미확인', row_id))
+        cursor.execute("UPDATE ledger SET is_mail_done = ? WHERE id = ?", ('확인완료' if (data.get('value') and str(data.get('value')).strip()) else '미확인', row_id))
     if key in ('pay_method_client', 'pay_method_driver'):
         row = cursor.execute("SELECT * FROM ledger WHERE id = ?", (row_id,)).fetchone()
         if row:
@@ -3153,16 +3168,22 @@ def manage_clients():
     if request.method == 'POST' and 'file' in request.files:
         file = request.files['file']
         if file.filename != '':
+            conn_up = None
             try:
                 if file.filename.lower().endswith(('.xlsx', '.xls')):
                     df = pd.read_excel(file, engine='openpyxl')
                 else:
                     df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
                 df = df.fillna('').astype(str)
-                conn = sqlite3.connect('ledger.db', timeout=15)
-                df.to_sql('clients', conn, if_exists='replace', index=False)
-                conn.commit(); conn.close(); load_db_to_mem()
-            except Exception as e: return f"업로드 오류: {str(e)}"
+                conn_up = sqlite3.connect('ledger.db', timeout=15)
+                df.to_sql('clients', conn_up, if_exists='replace', index=False)
+                conn_up.commit()
+                load_db_to_mem()
+            except Exception as e:
+                return f"업로드 오류: {str(e)}"
+            finally:
+                if conn_up is not None:
+                    conn_up.close()
     conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     try:
         clients_with_id = conn.execute("SELECT rowid as id, * FROM clients").fetchall()
@@ -3645,17 +3666,22 @@ def manage_drivers():
     if request.method == 'POST' and 'file' in request.files:
         file = request.files['file']
         if file.filename != '':
+            conn_up = None
             try:
                 if file.filename.lower().endswith(('.xlsx', '.xls')):
                     df = pd.read_excel(file, engine='openpyxl')
                 else:
                     df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
                 df = df.fillna('').astype(str)
-                conn = sqlite3.connect('ledger.db', timeout=15)
-                df.to_sql('drivers', conn, if_exists='replace', index=False)
-                conn.commit(); conn.close(); load_db_to_mem()
+                conn_up = sqlite3.connect('ledger.db', timeout=15)
+                df.to_sql('drivers', conn_up, if_exists='replace', index=False)
+                conn_up.commit()
+                load_db_to_mem()
             except Exception as e:
                 err_msg = f"<p style='color:red; margin-bottom:15px;'>업로드 오류: {str(e)}<br>엑셀(.xlsx, .xls) 또는 CSV 파일만 업로드 가능합니다.</p>"
+            finally:
+                if conn_up is not None:
+                    conn_up.close()
     
     DISPLAY_DRIVER_COLS = ["기사명", "차량번호", "연락처", "은행명", "계좌번호", "예금주", "사업자번호", "사업자", "개인/고정", "메모"]
     def _driver_col_label(c): return "기사 비고" if c == "메모" else c
@@ -3799,6 +3825,6 @@ def api_update_driver(driver_id):
 
 # 배포 시 FLASK_DEBUG=0 설정. 개발 시 기본으로 수정 시 서버 자동 재시작(use_reloader)
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8008))
+    port = int(os.environ.get('PORT', 5001))
     use_debug = os.environ.get('FLASK_DEBUG', '1').lower() in ('1', 'true', 'on', 'yes')
     app.run(debug=use_debug, use_reloader=use_debug, host='0.0.0.0', port=port)
