@@ -17,7 +17,7 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 # 한국시간(KST, UTC+9) 설정
 KST = timezone(timedelta(hours=9))
@@ -922,12 +922,12 @@ function loadLedgerList() {
                         displayVal = (item.issue_dt || val || '').toString().trim();
                         let toggleVal = hasVal ? "''" : "'"+today+"'";
                         onclickStr = `changeStatus(${item.id}, 'issue_dt', ${toggleVal})`;
-                        btnLabel = hasVal ? '확인완료' : '설정';
+                        btnLabel = hasVal ? '확인완료' : '미확인';
                     } else {
                         hasVal = !!displayVal;
                         let toggleVal = hasVal ? "''" : "'"+today+"'";
                         onclickStr = `changeStatus(${item.id}, '${key}', ${toggleVal})`;
-                        btnLabel = key==='in_dt' ? (hasVal?'수금완료':'설정') : (hasVal?'지급완료':'설정');
+                        btnLabel = key==='in_dt' ? (hasVal?'수금완료':'미확인') : (hasVal?'지급완료':'미확인');
                     }
                     let btnHtml = `<button class="btn-status ${hasVal?'bg-green':'bg-orange'}" style="font-size:10px; padding:3px 6px;" onclick="${onclickStr}">${btnLabel}</button>`;
                     let taxBizSpan = (key==='tax_dt' && (item.tax_biz||'').trim()) ? `<span style="font-size:10px; color:#666;">${(item.tax_biz||'').trim()}</span>` : '';
@@ -1463,13 +1463,16 @@ def index():
 @login_required 
 def settlement():
     conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
-    # 쿼리 파라미터는 항상 문자열로 취급 (숫자만 입력해도 오류 없음)
-    q_status = (request.args.get('status') or '').strip()
-    q_name = (request.args.get('name') or '').strip()
-    q_start = (request.args.get('start') or '').strip()
-    q_end = (request.args.get('end') or '').strip()
-    page = max(1, safe_int(request.args.get('page'), 1))
-    per_page_arg = safe_int(request.args.get('per_page'), 20)
+    # 쿼리 파라미터는 항상 문자열로 취급 (숫자 1개만 입력해도 오류 없음)
+    def _arg_str(key, default=''):
+        return str(request.args.get(key) or default).strip()
+    q_status = _arg_str('status')
+    q_name = _arg_str('name')
+    q_c_num = _arg_str('c_num')
+    q_start = _arg_str('start')
+    q_end = _arg_str('end')
+    page = max(1, safe_int(_arg_str('page') or '1', 1))
+    per_page_arg = safe_int(_arg_str('per_page') or '20', 20)
     per_page = per_page_arg if per_page_arg in (20, 50, 100) else 20
     
     # 성능: 날짜·이름 필터를 SQL로 적용해 조회량 감소
@@ -1501,14 +1504,17 @@ def settlement():
                 add_id_condition = True
             except (ValueError, TypeError):
                 pass
-        like_part = "(client_name LIKE ? OR d_name LIKE ? OR COALESCE(c_num,'') LIKE ?)"
-        like_params = [f"%{name_part}%", f"%{name_part}%", f"%{name_part}%"]
+        like_part = "(client_name LIKE ? OR d_name LIKE ?)"
+        like_params = [f"%{name_part}%", f"%{name_part}%"]
         if add_id_condition and id_val is not None:
             conditions.append("(" + like_part + " OR id = ?)")
             params.extend(like_params + [id_val])
         else:
             conditions.append(like_part)
             params.extend(like_params)
+    if q_c_num:
+        conditions.append("COALESCE(c_num,'') LIKE ?")
+        params.append(f"%{q_c_num}%")
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY dispatch_dt DESC"
@@ -1571,12 +1577,11 @@ def settlement():
         if q_start and order_dt < q_start: continue
         if q_end and order_dt > q_end: continue
         
-        # 이름 필터 (업체/기사명 + 차량번호 + 오더고유번호 n01, n02 또는 숫자만 01, 12 등)
+        # 이름 필터 (업체/기사명 + 오더고유번호 n01, n02 또는 숫자만 01, 12 등)
         if q_name:
             q = q_name.lower()
             in_client = q in str(row['client_name'] or '').lower()
             in_driver = q in str(row['d_name'] or '').lower()
-            in_c_num = q in str(row.get('c_num') or '').lower()
             order_no = ('n' + str(row['id']).zfill(2)).lower()
             match_order = (q == order_no or q in order_no or order_no in q)
             match_id = False
@@ -1585,8 +1590,12 @@ def settlement():
                     match_id = (row['id'] == int(q))
                 except (ValueError, TypeError):
                     pass
-            if not (in_client or in_driver or in_c_num or match_order or match_id):
+            if not (in_client or in_driver or match_order or match_id):
                 continue
+
+        # 차량번호 전용 필터 (Row는 .get 없음 → 인덱스 접근)
+        if q_c_num and q_c_num.lower() not in str(row['c_num'] or '').lower():
+            continue
 
         # 상태 필터
         if q_status:
@@ -1604,7 +1613,8 @@ def settlement():
         row_data['p_st'] = pay_status; row_data['p_cl'] = pay_color
         filtered_rows.append(row_data)
 
-    total_pages = (len(filtered_rows) + per_page - 1) // per_page
+    total_pages = max(1, (len(filtered_rows) + per_page - 1) // per_page)
+    page = min(max(1, page), total_pages)
     start = (page - 1) * per_page
     end = start + per_page
     page_data = filtered_rows[start:end]
@@ -1647,7 +1657,7 @@ def settlement():
         tax_biz2_val = (row.get('tax_biz2') or '').strip()
         tax_biz2_span = f'<span style="font-size:10px; color:#666;">{tax_biz2_val}</span>' if tax_biz2_val else ''
         issue_confirmed = bool(issue_dt_val)
-        issue_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{issue_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'issue_dt\', this.value)">{issue_dt_span}<button class="btn-status {"bg-green" if issue_confirmed else "bg-orange"}" onclick="changeStatus({row["id"]}, \'issue_dt\', {issue_dt_toggle})">{"확인완료" if issue_confirmed else "설정"}</button>{tax_biz2_span}</div>'
+        issue_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{issue_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'issue_dt\', this.value)">{issue_dt_span}<button class="btn-status {"bg-green" if issue_confirmed else "bg-orange"}" onclick="changeStatus({row["id"]}, \'issue_dt\', {issue_dt_toggle})">{"확인완료" if issue_confirmed else "미확인"}</button>{tax_biz2_span}</div>'
 
         me_c = (str(row.get('month_end_client') or '').strip() in ('1', 'Y'))
         me_d = (str(row.get('month_end_driver') or '').strip() in ('1', 'Y'))
@@ -1688,7 +1698,15 @@ def settlement():
             </td>
             <td>{row['client_name']}</td><td>{tax_cell}</td><td>{row['order_dt']}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td>{fee_display:,}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{mail_btn}</td><td>{issue_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td><td style="text-align:center;">{month_end_client_cell}</td><td style="text-align:center;">{month_end_driver_cell}</td></tr>"""
     
-    pagination_html = "".join([f'<a href="/settlement?status={q_status}&name={q_name}&start={q_start}&end={q_end}&per_page={per_page}&page={i}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
+    def _settlement_query(page_num=None):
+        qdict = {'status': q_status, 'name': q_name, 'start': q_start, 'end': q_end, 'per_page': per_page}
+        if q_c_num:
+            qdict['c_num'] = q_c_num
+        if page_num is not None:
+            qdict['page'] = page_num
+        return urlencode(qdict)
+
+    pagination_html = "".join([f'<a href="/settlement?{_settlement_query(i)}" class="page-btn {"active" if i==page else ""}">{i}</a>' for i in range(1, total_pages+1)])
 
     _qe = html.escape
     content = f"""<div class="section page-settlement"><h2>정산 관리 (기간 및 실시간 필터)</h2>
@@ -1706,7 +1724,9 @@ def settlement():
             <option value="done_in" {'selected' if q_status=='done_in' else ''}>수금완료</option>
             <option value="done_out" {'selected' if q_status=='done_out' else ''}>지급완료</option>
         </select>
-        <input type="text" name="name" value="{_qe(q_name)}" placeholder="오더고유번호(n01)·숫자(01)·업체/기사/차량 검색">
+        <input type="text" name="name" value="{_qe(q_name)}" placeholder="오더고유번호(n01)·숫자(01)·업체/기사 검색">
+        <strong>🚗 차량번호:</strong>
+        <input type="text" name="c_num" value="{_qe(q_c_num)}" placeholder="차량번호만 검색" style="width:100px;">
         <span style="margin-left:8px;">출력</span>
         <select name="per_page" onchange="this.form.submit()" style="padding:6px 10px; border:1px solid #d0d7de; border-radius:4px; font-size:13px;">
             <option value="20" {"selected" if per_page==20 else ""}>20</option>
@@ -1718,9 +1738,9 @@ def settlement():
         <button type="button" onclick="location.href='/settlement'" class="btn-status bg-gray">초기화</button>
     </form>
     <div style="margin: 15px 0;">
-        <a href="/export_misu_info?status={q_status}&name={q_name}&start={q_start}&end={q_end}" class="btn-status bg-red" style="text-decoration:none;">미수금 업체정보 엑셀</a>
-        <a href="/export_pay_info?status={q_status}&name={q_name}&start={q_start}&end={q_end}" class="btn-status bg-orange" style="text-decoration:none; margin-left:5px;">미지급 기사정보 엑셀</a>
-        <a href="/export_tax_not_issued?status={q_status}&name={q_name}&start={q_start}&end={q_end}" class="btn-status bg-gray" style="text-decoration:none; margin-left:5px;">세금계산서 미발행 엑셀</a>
+        <a href="/export_misu_info?{urlencode({'status': q_status, 'name': q_name, 'c_num': q_c_num, 'start': q_start, 'end': q_end})}" class="btn-status bg-red" style="text-decoration:none;">미수금 업체정보 엑셀</a>
+        <a href="/export_pay_info?{urlencode({'status': q_status, 'name': q_name, 'c_num': q_c_num, 'start': q_start, 'end': q_end})}" class="btn-status bg-orange" style="text-decoration:none; margin-left:5px;">미지급 기사정보 엑셀</a>
+        <a href="/export_tax_not_issued?{urlencode({'status': q_status, 'name': q_name, 'c_num': q_c_num, 'start': q_start, 'end': q_end})}" class="btn-status bg-gray" style="text-decoration:none; margin-left:5px;">세금계산서 미발행 엑셀</a>
     </div>
     <div class="scroll-sticky-wrap">
     <div class="scroll-top" id="settlementScrollTop"><table><thead><tr><th>로그</th><th>업체명</th><th>계산서</th><th>오더일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>공급가액</th><th>부가세</th><th>합계</th><th>수금상태</th><th>기사운임</th><th>부가세</th><th>합계</th><th>지급상태</th><th>우편확인</th><th>기사계산서발행일</th><th>기사계산서</th><th>운송장</th><th>업체월말</th><th>기사월말</th></tr></thead><tbody><tr><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr></tbody></table></div>
@@ -3238,7 +3258,29 @@ def manage_clients():
                     df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
                 df = df.fillna('').astype(str)
                 conn_up = sqlite3.connect('ledger.db', timeout=15)
-                df.to_sql('clients', conn_up, if_exists='replace', index=False)
+                # 기존 데이터 유지: 업로드 파일은 추가·수정만 반영 (업체명 기준 병합)
+                try:
+                    existing = pd.read_sql("SELECT * FROM clients", conn_up)
+                except Exception:
+                    existing = pd.DataFrame()
+                if len(existing) == 0:
+                    merge_df = df
+                else:
+                    key_col = '업체명'
+                    if key_col not in df.columns:
+                        merge_df = df
+                    else:
+                        existing[key_col] = existing[key_col].astype(str).str.strip()
+                        df[key_col] = df[key_col].astype(str).str.strip()
+                        by_name = existing.set_index(key_col).to_dict('index')
+                        for _, r in df.iterrows():
+                            key = (r.get(key_col) or '').strip() or None
+                            if key is None:
+                                continue
+                            row_dict = {c: r.get(c, '') if c in r else by_name.get(key, {}).get(c, '') for c in existing.columns}
+                            by_name[key] = row_dict
+                        merge_df = pd.DataFrame(list(by_name.values()), columns=existing.columns)
+                merge_df.to_sql('clients', conn_up, if_exists='replace', index=False)
                 conn_up.commit()
                 load_db_to_mem()
             except Exception as e:
@@ -3736,7 +3778,35 @@ def manage_drivers():
                     df = pd.read_csv(io.StringIO(file.stream.read().decode("utf-8-sig")))
                 df = df.fillna('').astype(str)
                 conn_up = sqlite3.connect('ledger.db', timeout=15)
-                df.to_sql('drivers', conn_up, if_exists='replace', index=False)
+                # 기존 데이터 유지: 업로드 파일은 추가·수정만 반영 (기사명+차량번호 기준 병합)
+                try:
+                    existing = pd.read_sql("SELECT * FROM drivers", conn_up)
+                except Exception:
+                    existing = pd.DataFrame()
+                if len(existing) == 0:
+                    merge_df = df
+                else:
+                    k1, k2 = '기사명', '차량번호'
+                    if k1 not in df.columns or k2 not in df.columns:
+                        merge_df = df
+                    else:
+                        existing[k1] = existing[k1].astype(str).str.strip()
+                        existing[k2] = existing[k2].astype(str).str.strip()
+                        df[k1] = df[k1].astype(str).str.strip()
+                        df[k2] = df[k2].astype(str).str.strip()
+                        by_key = {}
+                        for _, r in existing.iterrows():
+                            by_key[(r[k1], r[k2])] = r.to_dict()
+                        for _, r in df.iterrows():
+                            key = ((r.get(k1) or '').strip(), (r.get(k2) or '').strip())
+                            if key == ('', ''):
+                                continue
+                            row_dict = {c: r.get(c, '') if c in r else by_key.get(key, {}).get(c, '') for c in existing.columns}
+                            by_key[key] = row_dict
+                        merge_df = pd.DataFrame(list(by_key.values()), columns=existing.columns)
+                if 'id' in merge_df.columns:
+                    merge_df = merge_df.drop(columns=['id'], errors='ignore')
+                merge_df.to_sql('drivers', conn_up, if_exists='replace', index=False)
                 conn_up.commit()
                 load_db_to_mem()
             except Exception as e:
