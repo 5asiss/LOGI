@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,64 @@ KST = timezone(timedelta(hours=9))
 def now_kst():
     """현재 한국시간 반환"""
     return datetime.now(KST)
+
+# 백업 기본 경로 (Windows: C:\logi\backup, 그 외: ./backup)
+if os.name == 'nt':
+    BACKUP_BASE_DIR = r"C:\logi\backup"
+else:
+    BACKUP_BASE_DIR = os.path.join(os.getcwd(), "backup")
+
+def backup_all(reason: str = "auto") -> None:
+    """
+    ledger.db + 통합장부 전체 엑셀을 백업 폴더에 저장.
+    - 백업 경로: BACKUP_BASE_DIR/YYYYMMDD_HHMMSS_reason/
+    """
+    try:
+        ts = now_kst().strftime('%Y%m%d_%H%M%S')
+        base_dir = BACKUP_BASE_DIR
+        os.makedirs(base_dir, exist_ok=True)
+        folder_name = f"{ts}_{reason}"
+        target_dir = os.path.join(base_dir, folder_name)
+        os.makedirs(target_dir, exist_ok=True)
+
+        # DB 백업
+        db_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.db")
+        if os.path.isfile(db_src):
+            shutil.copy2(db_src, os.path.join(target_dir, f"ledger_{ts}.db"))
+
+        # 통합장부 전체 엑셀 백업 (기존 /api/ledger_excel 로직과 동일한 데이터)
+        conn = sqlite3.connect('ledger.db', timeout=15)
+        conn.row_factory = sqlite3.Row
+        try:
+            all_rows = conn.execute("SELECT * FROM ledger ORDER BY id DESC").fetchall()
+        finally:
+            conn.close()
+
+        col_keys = [c['k'] for c in FULL_COLUMNS]
+        headers = ['id'] + [c['n'] for c in FULL_COLUMNS]
+        rows = []
+        for r in all_rows:
+            d = dict(r)
+            calc_vat_auto(d)
+            driver_fixed = get_driver_fixed_type(drivers_db, d.get('d_name'), d.get('c_num'))
+            if driver_fixed is not None:
+                d['log_move'] = driver_fixed
+            d_name = (d.get('d_name') or '').strip()
+            c_num = (d.get('c_num') or '').strip()
+            if d_name or c_num:
+                driver_row = next((dr for dr in drivers_db if (dr.get('기사명') or '').strip() == d_name and (dr.get('차량번호') or '').strip() == c_num), None)
+                if driver_row is not None:
+                    d['memo2'] = driver_row.get('메모') or d.get('memo2') or ''
+            row = [d.get('id', '')] + [d.get(k, '') or '' for k in col_keys]
+            rows.append(row)
+
+        df = pd.DataFrame(rows if rows else [[]], columns=headers)
+        backup_xlsx = os.path.join(target_dir, f"통합장부_{ts}.xlsx")
+        with pd.ExcelWriter(backup_xlsx, engine='openpyxl') as w:
+            df.to_excel(w, index=False)
+    except Exception as e:
+        # 백업 실패는 서비스 동작을 막지 않도록 로그만 출력
+        print(f"[backup_all error] {e}")
 
 def calc_supply_value(r):
     """공급가액 = 수수료 + 선착불 + 업체운임"""
@@ -1399,14 +1458,34 @@ def login():
         password = request.form.get('password', '')
         if username == ADMIN_ID and password == ADMIN_PW:
             session['logged_in'] = True
+            # 로그인 시 자동 백업
+            try:
+                backup_all("login")
+            except Exception as e:
+                print(f"[backup_all login error] {e}")
             return redirect(url_for('index'))
         else:
             error = "아이디 또는 비밀번호가 올바르지 않습니다."
     return render_template_string(LOGIN_HTML, error=error)
 
+@app.errorhandler(500)
+def handle_internal_error(e):
+    """예상치 못한 서버 오류 발생 시에도 자동 백업 시도"""
+    try:
+        backup_all("error500")
+    except Exception as ex:
+        print(f"[backup_all 500 error] {ex}")
+    # 기존 Flask 기본 500 응답 유지
+    return jsonify({"status": "error", "message": "서버 오류가 발생했습니다."}), 500
+
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
+    # 로그아웃 시 자동 백업
+    try:
+        backup_all("logout")
+    except Exception as e:
+        print(f"[backup_all logout error] {e}")
     return redirect(url_for('login'))
 
 @app.route('/')

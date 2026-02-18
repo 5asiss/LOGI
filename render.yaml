@@ -5,7 +5,8 @@ services:
     name: logi
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    # Render가 설정한 PORT에 0.0.0.0으로 바인드 (반드시 0.0.0.0 사용)
+    startCommand: gunicorn -w 1 app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: FLASK_SECRET_KEY
         generateValue: true
