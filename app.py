@@ -2051,24 +2051,16 @@ def statistics():
     conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
     now = now_kst()
     today = now
-    # 기간: period(1/3/6개월) 또는 start/end 직접 입력. 선택한 기간은 쿠키로 유지
-    q_period = request.args.get('period', '').strip() or request.cookies.get('stats_period', '').strip()
-    q_start = request.args.get('start', '')
-    q_end = request.args.get('end', '')
-    if q_period in ('1', '3', '6'):
-        months = int(q_period)
-        q_start, q_end = _statistics_date_range(months, today)
-    elif not q_start or not q_end:
-        # 기본: 저장된 기간이 있으면 사용, 없으면 1개월
-        saved = request.cookies.get('stats_period', '1').strip()
-        if saved in ('1', '3', '6'):
-            q_start, q_end = _statistics_date_range(int(saved), today)
-            q_period = saved
+    # 기간: 오더일 start/end만 사용. 선택한 기간은 쿠키로 고정 유지
+    q_start = request.args.get('start', '').strip()
+    q_end = request.args.get('end', '').strip()
+    if not q_start or not q_end:
+        saved_start = request.cookies.get('stats_start', '').strip()
+        saved_end = request.cookies.get('stats_end', '').strip()
+        if saved_start and saved_end:
+            q_start, q_end = saved_start, saved_end
         else:
-            q_period = '1'
             q_start, q_end = _statistics_date_range(1, today)
-    else:
-        q_period = ''  # 사용자 지정 기간이면 period 비움
     q_client = request.args.get('client', '').strip()
     q_driver = request.args.get('driver', '').strip()
     q_c_num = request.args.get('c_num', '').strip()
@@ -2353,22 +2345,6 @@ def statistics():
             <div class="table-scroll stats-transfer-scroll" id="bizSettleZone"><table class="client-settle-table" id="statsBizTable"><thead><tr><th>사업자번호</th><th>사업자</th><th>지급일</th><th>기사명</th><th>차량번호</th><th>배차일 ↕</th><th>오더일 ↕</th><th>노선</th><th>기사운임</th><th>부가세</th><th>합계</th></tr></thead><tbody></tbody></table></div>
         </div>"""
 
-    # 기간 버튼(1/3/6개월) 클릭 시 다른 필터 유지용 쿼리
-    _parts = []
-    if q_client: _parts.append('client=' + quote(q_client, safe=''))
-    if q_driver: _parts.append('driver=' + quote(q_driver, safe=''))
-    if q_c_num: _parts.append('c_num=' + quote(q_c_num, safe=''))
-    if q_status: _parts.append('status=' + quote(q_status, safe=''))
-    if q_month_client: _parts.append('month_end_client=1')
-    if q_month_driver: _parts.append('month_end_driver=1')
-    if q_in_start: _parts.append('in_start=' + quote(q_in_start, safe=''))
-    if q_in_end: _parts.append('in_end=' + quote(q_in_end, safe=''))
-    if q_out_start: _parts.append('out_start=' + quote(q_out_start, safe=''))
-    if q_out_end: _parts.append('out_end=' + quote(q_out_end, safe=''))
-    if q_dispatch_start: _parts.append('dispatch_start=' + quote(q_dispatch_start, safe=''))
-    if q_dispatch_end: _parts.append('dispatch_end=' + quote(q_dispatch_end, safe=''))
-    q_extra = '&' + '&'.join(_parts) if _parts else ''
-
     content = f"""
     <style>
         .summary-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }}
@@ -2395,14 +2371,8 @@ def statistics():
         <h2 style="color:#1a2a6c; margin-bottom:20px; border-left:5px solid #1a2a6c; padding-left:10px;">📈 에스엠 로지텍 정산 센터 <span style="font-size:0.85em; color:#555;">(총 {stats_total_count}개)</span></h2>
         
         <form method="get" id="statsFilterForm" style="background:#f8f9fa; padding:20px; border-radius:10px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; border:1px solid #dee2e6;">
-            <strong>📅 기간:</strong>
-            <span style="display:inline-flex; gap:6px; align-items:center;">
-                <a href="/statistics?period=1{q_extra}" class="tab-btn {'active' if q_period=='1' else ''}" style="padding:8px 14px; text-decoration:none; color:inherit;">1개월</a>
-                <a href="/statistics?period=3{q_extra}" class="tab-btn {'active' if q_period=='3' else ''}" style="padding:8px 14px; text-decoration:none; color:inherit;">3개월</a>
-                <a href="/statistics?period=6{q_extra}" class="tab-btn {'active' if q_period=='6' else ''}" style="padding:8px 14px; text-decoration:none; color:inherit;">6개월</a>
-            </span>
-            <span style="color:#666; font-size:12px;">또는</span>
-            <input type="date" name="start" value="{q_start}"> ~ <input type="date" name="end" value="{q_end}">
+            <strong>📅 오더일 검색:</strong>
+            <input type="date" name="start" value="{q_start}" title="오더일 시작"> ~ <input type="date" name="end" value="{q_end}" title="오더일 종료">
             <strong>🏢 업체:</strong> <input type="text" name="client" value="{q_client}" style="width:100px;">
             <strong>🚚 기사:</strong> <input type="text" name="driver" value="{q_driver}" style="width:100px;">
             <strong>🚗 차량번호:</strong> <input type="text" name="c_num" value="{q_c_num}" placeholder="차량번호 검색" style="width:100px;">
@@ -2623,8 +2593,9 @@ def statistics():
     </script>
     """
     resp = make_response(render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]"))
-    if q_period in ('1', '3', '6'):
-        resp.set_cookie('stats_period', q_period, max_age=365*24*60*60)
+    if q_start and q_end:
+        resp.set_cookie('stats_start', q_start, max_age=365*24*60*60)
+        resp.set_cookie('stats_end', q_end, max_age=365*24*60*60)
     return resp
 
 @app.route('/api/statistics_transfer_excel')
