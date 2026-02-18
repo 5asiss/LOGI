@@ -1001,6 +1001,7 @@ function loadLedgerList() {
                         else btns += `<button class="img-num-btn" style="cursor:default; color:#ccc;">${i+1}</button>`;
                     }
                     return `<td${tdCls}>${btns}</div></td>`;
+                    
                 }
                 if(['in_dt','tax_dt','out_dt','mail_dt','issue_dt'].includes(key)) {
                     let label = key==='in_dt'?'입금일':key==='tax_dt'?'계산서발행일':key==='out_dt'?'지급일':key==='mail_dt'?'우편확인일':'기사계산서발행일';
