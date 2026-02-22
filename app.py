@@ -1037,9 +1037,9 @@ function loadLedgerList() {
                     let preNum = parseFloat(item.pre_post) || 0;
                     val = (feeNum + commNum + preNum).toLocaleString();
                 }
-                // 기사운임은 합산 없이 그대로 표기
+                // 매입계산서/매출처인수증 사진: 한 셀만 출력 (</div>를 btns 안에서 닫아 열 밀림 방지)
                 if(key === 'tax_img' || key === 'ship_img') {
-                    let paths = val.split(',').map(p => p.trim());
+                    let paths = (val || '').toString().split(',').map(p => p.trim());
                     let btns = '<div style="display:flex; gap:2px; justify-content:center;">';
                     for(let i=0; i<5; i++) {
                         let p = (paths[i] && paths[i].startsWith('static')) ? paths[i] : '';
@@ -1047,8 +1047,8 @@ function loadLedgerList() {
                         if(p) btns += `<button class="img-num-btn active" onclick="viewImg('${safe}')">${i+1}</button>`;
                         else btns += `<button class="img-num-btn" style="cursor:default; color:#ccc;">${i+1}</button>`;
                     }
-                    return `<td${tdCls}>${btns}</div></td>`;
-                    
+                    btns += '</div>';
+                    return `<td${tdCls}>${btns}</td>`;
                 }
                 if(['in_dt','tax_dt','out_dt','mail_dt','issue_dt'].includes(key)) {
                     let label = key==='in_dt'?'입금일':key==='tax_dt'?'계산서발행일':key==='out_dt'?'지급일':key==='mail_dt'?'우편확인일':'기사계산서발행일';
@@ -1122,7 +1122,8 @@ function loadLedgerList() {
                     let safeVal = String(displayVal).replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     return `<td${tdCls}>${safeVal}</td>`;
                 }
-                return `<td${tdCls}>${val}</td>`;
+                let esc = (v) => (v == null || v === undefined) ? '' : String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                return `<td${tdCls}>${esc(val)}</td>`;
             }).join('')}
         </tr>
     `).join('');
@@ -1566,13 +1567,18 @@ def logout():
         print(f"[backup_all logout error] {e}")
     return redirect(url_for('login'))
 
+# 장부 목록 테이블: 숨김 컬럼은 아예 제외 (공란 열 없이 오른쪽 열 당김)
+def ledger_list_columns():
+    return [c for c in FULL_COLUMNS if c['k'] not in HIDDEN_LEDGER_KEYS]
+
 @app.route('/')
 @login_required 
 def index():
-    col_keys_json = json.dumps([c['k'] for c in FULL_COLUMNS])
+    list_cols = ledger_list_columns()
+    col_keys_json = json.dumps([c['k'] for c in list_cols])
     col_keys_driver_json = json.dumps(list(COL_KEYS_DRIVER))
     col_keys_client_json = json.dumps(list(COL_KEYS_CLIENT))
-    col_keys_hidden_json = json.dumps(list(HIDDEN_LEDGER_KEYS))
+    col_keys_hidden_json = json.dumps([])
     left_cols, right_cols = ledger_edit_modal_columns()
     def _edit_cell(c, label):
         if c['k'] in HIDDEN_LEDGER_KEYS:
@@ -1637,9 +1643,9 @@ def index():
         <a href="/api/download-db" class="btn-status bg-orange" style="text-decoration:none; padding:6px 12px; border-radius:4px;" title="배포 전 서버 DB 백업">📥 서버 DB 백업</a>
         </div>
         <div class="scroll-sticky-wrap">
-        <div class="scroll-top" id="ledgerListScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody><tr>{"<td>-</td>" * (1 + len(FULL_COLUMNS))}</tr></tbody></table></div>
-        <div class="scroll-x scroll-x-ledger" id="ledgerListScroll"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
-        <div class="scroll-top" id="ledgerListScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in FULL_COLUMNS])}</tr></thead><tbody><tr>{"<td>-</td>" * (1 + len(FULL_COLUMNS))}</tr></tbody></table></div>
+        <div class="scroll-top" id="ledgerListScrollTop"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in list_cols])}</tr></thead><tbody><tr>{"<td>-</td>" * (1 + len(list_cols))}</tr></tbody></table></div>
+        <div class="scroll-x scroll-x-ledger" id="ledgerListScroll"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in list_cols])}</tr></thead><tbody id="ledgerBody"></tbody></table></div>
+        <div class="scroll-top" id="ledgerListScrollBottom" style="margin-top:4px;"><table><thead><tr><th>관리</th>{"".join([f"<th{_col_attr(c['k'])}>{c['n']}</th>" for c in list_cols])}</tr></thead><tbody><tr>{"<td>-</td>" * (1 + len(list_cols))}</tr></tbody></table></div>
         </div>
         <div id="ledgerPagination" class="pagination"></div>
     </div>
