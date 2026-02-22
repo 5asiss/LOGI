@@ -185,6 +185,11 @@ if not os.environ.get('FLASK_DEBUG'):
     if os.environ.get('HTTPS', '').lower() in ('1', 'true', 'on'):
         app.config['SESSION_COOKIE_SECURE'] = True
 
+# Render 등 PaaS 헬스 체크: 포트 감지용 (로그인 불필요)
+@app.route('/health')
+def health():
+    return 'ok', 200
+
 # [수정/추가] 로그인 체크 데코레이터
 def login_required(f):
     @wraps(f)

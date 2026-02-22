@@ -1,12 +1,14 @@
 # Render Web Service (Blueprint)
 # https://render.com/docs/blueprint-spec
+# 대시보드에서 Health Check Path를 /health 로 설정하면 포트 감지가 안정적입니다.
 services:
   - type: web
     name: logi
     runtime: python
     buildCommand: pip install -r requirements.txt
-    # Render가 설정한 PORT에 0.0.0.0으로 바인드 (반드시 0.0.0.0 사용)
-    startCommand: gunicorn -w 1 app:app --bind 0.0.0.0:$PORT
+    # PORT는 셸에서 확실히 치환 (Render 포트 감지용)
+    startCommand: bash run_render.sh
+    healthCheckPath: /health
     envVars:
       - key: FLASK_SECRET_KEY
         generateValue: true
