@@ -3709,6 +3709,11 @@ def sanitize_ledger_value(k, v):
             return v[:10]
         if re.match(r'^\d{4}/\d{2}/\d{2}', v):
             return v[:10].replace('/', '-')
+        if re.match(r'^\d{4}\.\d{1,2}\.\d{1,2}', v):
+            return v[:10].replace('.', '-')
+        # 8자리 숫자 YYYYMMDD
+        if re.match(r'^\d{8}$', v):
+            return f'{v[:4]}-{v[4:6]}-{v[6:8]}'
         return ''
     if t == 'datetime-local':
         if not v: return ''
@@ -3931,25 +3936,71 @@ def get_ledger():
 
 
 def _excel_val_to_date_str(val, key):
-    """엑셀 셀 값(날짜/시리얼)을 YYYY-MM-DD 문자열로 변환. date 타입 컬럼용."""
-    if val is None or (isinstance(val, float) and pd.isna(val)) or val == '':
+    """엑셀 셀 값(날짜/시리얼/문자열)을 YYYY-MM-DD 문자열로 변환. date 타입 컬럼용."""
+    if val is None or val == '':
         return ''
-    if hasattr(val, 'strftime') and not pd.isna(val):
-        try:
-            return val.strftime('%Y-%m-%d')
-        except (ValueError, TypeError):
+    try:
+        if pd.isna(val):
             return ''
-    if isinstance(val, (int, float)) and not pd.isna(val) and 0 < float(val) < 100000:
+    except (TypeError, ValueError):
+        pass
+    # numpy.datetime64
+    try:
+        if hasattr(val, 'item') and callable(getattr(val, 'item', None)):
+            v = val.item()
+            if hasattr(v, 'strftime'):
+                return v.strftime('%Y-%m-%d')
+    except (ValueError, TypeError, OSError):
+        pass
+    # datetime/Timestamp 등 strftime 가능한 객체 (NaT 제외)
+    if hasattr(val, 'strftime'):
         try:
-            return (datetime(1899, 12, 30) + timedelta(days=float(val))).strftime('%Y-%m-%d')
+            if not pd.isna(val):
+                return val.strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
+            pass
+    # 숫자(엑셀 시리얼): int/float
+    if isinstance(val, (int, float)):
+        try:
+            n = float(val)
+            if 0 < n < 100000:
+                return (datetime(1899, 12, 30) + timedelta(days=n)).strftime('%Y-%m-%d')
         except Exception:
             pass
     s = str(val).strip()
+    if not s or s.lower() in ('nat', 'nan', 'none'):
+        return ''
+    # 이미 YYYY-MM-DD 또는 YYYY/MM/DD 형태 (시간 포함 가능)
     if re.match(r'^\d{4}-\d{2}-\d{2}', s):
         return s[:10]
     if re.match(r'^\d{4}/\d{2}/\d{2}', s):
         return s[:10].replace('/', '-')
-    return s[:10] if len(s) >= 10 else s
+    if re.match(r'^\d{4}\.\d{1,2}\.\d{1,2}', s):
+        return s[:10].replace('.', '-') if len(s) >= 10 else ''
+    # 엑셀 시리얼이 문자열로 읽힌 경우 (예: "44927", "44927.0")
+    try:
+        n = float(s)
+        if 0 < n < 100000:
+            return (datetime(1899, 12, 30) + timedelta(days=n)).strftime('%Y-%m-%d')
+    except (ValueError, TypeError):
+        pass
+    # strptime으로 다양한 문자열 형식 시도
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M',
+                '%Y/%m/%d %H:%M:%S', '%Y/%m/%d', '%Y.%m.%d', '%Y.%m.%d %H:%M:%S',
+                '%y-%m-%d', '%y/%m/%d', '%d-%m-%Y', '%d/%m/%Y', '%m-%d-%Y', '%m/%d/%Y'):
+        try:
+            dt = datetime.strptime(s[:19].strip(), fmt)
+            return dt.strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
+            continue
+    # dateutil.parser fallback (유연한 파싱)
+    try:
+        from dateutil import parser as dateutil_parser
+        dt = dateutil_parser.parse(s)
+        return dt.strftime('%Y-%m-%d')
+    except Exception:
+        pass
+    return s[:10] if len(s) >= 10 and re.match(r'^\d', s) else ''
 
 
 @app.route('/api/ledger_excel_template')
@@ -4061,16 +4112,18 @@ def ledger_upload():
             key = header_to_key.get(str(col).strip())
             if key:
                 val = row.get(col, '')
-                if val is None or (isinstance(val, float) and pd.isna(val)): val = ''
-                if pd.isna(val): val = ''
-                # 날짜 타입 컬럼: 엑셀 datetime/시리얼 → YYYY-MM-DD 통일
-                if key in date_keys and val != '':
+                try:
+                    if val is None or pd.isna(val): val = ''
+                except (TypeError, ValueError):
+                    pass
+                # 날짜 타입 컬럼: 항상 변환 적용 (빈값/시리얼/문자열/객체 → YYYY-MM-DD 또는 '')
+                if key in date_keys:
                     val = _excel_val_to_date_str(val, key)
                 elif key in path_keys:
                     # 매입계산서 사진·매출처인수증 사진: 경로(주소) 문자열 그대로 보존 (쉼표 구분 다중 경로 포함)
                     val = str(val).strip() if val != '' and not pd.isna(val) else ''
-                elif key != 'id':
-                    val = str(val) if val != '' and not pd.isna(val) else ''
+                elif key != 'id' and val != '':
+                    val = str(val) if not pd.isna(val) else ''
                 data[key] = sanitize_ledger_value(key, str(val)) if key != 'id' else str(val).strip()
         if not data:
             continue
