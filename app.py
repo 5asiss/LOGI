@@ -46,6 +46,7 @@ def backup_all(reason: str = "auto") -> None:
         target_dir = os.path.join(base_dir, folder_name)
         os.makedirs(target_dir, exist_ok=True)
 
+
         # DB 백업
         db_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.db")
         if os.path.isfile(db_src):
