@@ -319,7 +319,7 @@ def _build_full_columns():
         {"n": "차량번호", "k": "c_num", "c": "driver-search"},
         {"n": "기사연락처", "k": "d_phone", "c": "driver-search"}, {"n": "콜명", "k": "memo2", "t": "text"},
         {"n": "매출사업자구분(개인/법인)", "k": "pay_to", "t": "text"}, {"n": "매출처명", "k": "client_name", "c": "client-search"},
-        {"n": "매출결제담당 연락처", "k": "c_mgr_phone", "t": "text"}, {"n": "대표자", "k": "c_mgr_name"},
+        {"n": "매출결제담당 연락처", "k": "c_mgr_phone", "t": "text"}, {"n": "매출처담당자명", "k": "c_mgr_name", "t": "text"},
         {"n": "매출처연락처", "k": "c_phone"}, {"n": "매출처사업자번호", "k": "biz_num"},
         {"n": "매출처사업자주소", "k": "biz_addr"}, {"n": "업종", "k": "biz_type1"},
         {"n": "업태", "k": "biz_type2"}, {"n": "메일주소", "k": "mail"},
@@ -1236,6 +1236,10 @@ function loadLedgerList() {
                     let safeVal = String(displayVal).replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     return `<td${tdCls}>${safeVal}</td>`;
                 }
+                if(key === 'pay_bank' || key === 'in_bank') {
+                    let safeVal = (val == null || val === undefined) ? '' : String(val).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    return `<td${tdCls}><input type="text" class="mgmt-memo-input" style="width:100%; min-width:60px; font-size:10px; padding:4px; box-sizing:border-box;" value="${safeVal}" placeholder="${key==='pay_bank'?'지급통장':'수금통장'}" onchange="changeStatus(${item.id}, '${key}', this.value)"></td>`;
+                }
                 let esc = (v) => (v == null || v === undefined) ? '' : String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                 return `<td${tdCls}>${esc(val)}</td>`;
             }).join('')}
@@ -1451,6 +1455,9 @@ function loadLedgerList() {
                 .then(function(res) {
                     if (res.status === 'success') {
                         closeLedgerEditModal();
+                        // 현재 스크롤 위치 저장 (목록 갱신 후 복원용)
+                        var listEl = document.getElementById('ledgerListScroll');
+                        if (listEl) try { sessionStorage.setItem('ledger_scroll', JSON.stringify({ left: listEl.scrollLeft, top: listEl.scrollTop })); } catch(e) {}
                         // 장부목록에 수정된 행이 나오도록 필터 초기화 후 목록 새로고침
                         var startEl = document.getElementById('startDate'); var endEl = document.getElementById('endDate');
                         if (startEl) startEl.value = ''; if (endEl) endEl.value = '';
@@ -1461,8 +1468,6 @@ function loadLedgerList() {
                         var searchEl = document.getElementById('ledgerSearch'); if (searchEl) searchEl.value = '';
                         var urlParams = new URLSearchParams(window.location.search); urlParams.set('page', '1'); urlParams.delete('q'); history.replaceState(null, '', (urlParams.toString() ? '?' + urlParams.toString() : window.location.pathname));
                         if (typeof loadLedgerList === 'function') loadLedgerList();
-                        // 수정한 행이 목록에 보이도록 잠시 후 해당 행으로 스크롤
-                        setTimeout(function() { var row = document.querySelector('#ledgerBody tr[data-id="'+savedId+'"]'); if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, 400);
                     } else alert(res.message || '저장 실패');
                 })
                 .catch(function() { alert('저장 중 오류'); });
@@ -3941,13 +3946,46 @@ def export_stats():
 
 @app.route('/upload_evidence/<int:ledger_id>', methods=['GET', 'POST'])
 def upload_evidence(ledger_id):
-    """기사가 링크로 접속해 계산서/운송장 사진 업로드 (로그인 불필요)"""
+    """기사가 링크로 접속해 계산서/운송장 사진 업로드 (로그인 불필요). 업로드 후 삭제 가능."""
     target_type = request.args.get('type', 'all')
     try:
         seq_val = int(request.args.get('seq', 1) or 1)
         target_seq = str(max(1, min(5, seq_val)))
     except (ValueError, TypeError):
         target_seq = '1'
+
+    # GET + action=delete: 해당 슬롯 삭제 후 리다이렉트
+    if request.method == 'GET' and request.args.get('action') == 'delete':
+        del_seq = request.args.get('seq', '1')
+        try:
+            del_seq_int = max(1, min(5, int(del_seq)))
+        except (ValueError, TypeError):
+            del_seq_int = 1
+        conn = sqlite3.connect('ledger.db', timeout=15)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT tax_img, ship_img FROM ledger WHERE id = ?", (ledger_id,)).fetchone()
+        if row:
+            row = dict(row)
+            col = 'tax_img' if target_type == 'tax' else 'ship_img'
+            raw = (row.get(col) or '').strip()
+            plist = [p.strip() for p in raw.split(',')] if raw else [""] * 5
+            while len(plist) < 5:
+                plist.append("")
+            idx = del_seq_int - 1
+            old_path = plist[idx] if idx < len(plist) else ""
+            plist[idx] = ""
+            new_val = ",".join(plist)
+            conn.execute(f"UPDATE ledger SET [{col}] = ? WHERE id = ?", (new_val, ledger_id))
+            if old_path and os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+            conn.commit()
+        conn.close()
+        from flask import redirect
+        return redirect(f"/upload_evidence/{ledger_id}?type={target_type}&seq={target_seq}")
+
     if request.method == 'POST':
         tax_file, ship_file = request.files.get('tax_file'), request.files.get('ship_file')
         conn = sqlite3.connect('ledger.db', timeout=15); conn.row_factory = sqlite3.Row
@@ -3977,6 +4015,20 @@ def upload_evidence(ledger_id):
             conn.execute("UPDATE ledger SET mail_dt = ?, is_mail_done = ? WHERE id = ?", (today_str, "확인완료", ledger_id))
         conn.commit(); conn.close(); return "<h3>업로드 완료</h3><script>setTimeout(()=>location.reload(), 1000);</script>"
 
+    # GET: 현재 업로드 상태 조회 (삭제 버튼 표시용)
+    conn = sqlite3.connect('ledger.db', timeout=15)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT tax_img, ship_img FROM ledger WHERE id = ?", (ledger_id,)).fetchone()
+    if not row:
+        conn.close()
+        return "해당 장부를 찾을 수 없습니다.", 404
+    row = dict(row)
+    conn.close()
+    raw_paths = (row.get('tax_img') if target_type == 'tax' else row.get('ship_img')) or ''
+    paths_list = [p.strip() for p in raw_paths.split(',')] if raw_paths else []
+    while len(paths_list) < 5:
+        paths_list.append('')
+
     seq_btns = []
     for i in range(1, 6):
         active_cls = 'active' if str(i) == target_seq else ''
@@ -3985,6 +4037,18 @@ def upload_evidence(ledger_id):
     seq_btns_html = "".join(seq_btns)
 
     title_text = "기사계산서" if target_type == "tax" else "운송장"
+    # 업로드된 슬롯별 삭제 링크
+    slots_html_parts = []
+    for i in range(1, 6):
+        p = paths_list[i - 1] if i <= len(paths_list) else ''
+        has_file = bool(p and p.strip())
+        if has_file:
+            del_url = f"/upload_evidence/{ledger_id}?type={target_type}&seq={i}&action=delete"
+            slots_html_parts.append(f'<span class="slot-item"><span>{i}번: 업로드됨</span> <a href="{del_url}" class="slot-del">삭제</a></span>')
+        else:
+            slots_html_parts.append(f'<span class="slot-item">{i}번: 비어있음</span>')
+    slots_html = '<div class="slot-list">' + ' '.join(slots_html_parts) + '</div>'
+
     script = (
         "<script>async function processAndUpload(){"
         "const s=document.getElementById('status'); const fileInput = document.getElementById('file_input');"
@@ -3999,10 +4063,11 @@ def upload_evidence(ledger_id):
 
     html = (
         '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
-        '<style>body{padding:20px; text-align:center; font-family:sans-serif;} .seq-btns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;} .seq-btn{padding:10px 15px; border:1px solid #ccc; background:white; cursor:pointer;} .seq-btn.active{background:#007bff; color:white; border-color:#007bff; font-weight:bold;} button[type="button"]{width:100%; padding:15px; background:#28a745; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; margin-top:10px;}</style>'
+        '<style>body{padding:20px; text-align:center; font-family:sans-serif;} .seq-btns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;} .seq-btn{padding:10px 15px; border:1px solid #ccc; background:white; cursor:pointer;} .seq-btn.active{background:#007bff; color:white; border-color:#007bff; font-weight:bold;} button[type="button"]{width:100%; padding:15px; background:#28a745; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; margin-top:10px;} .slot-list{margin:15px 0; padding:12px; background:#f8f9fa; border-radius:8px; font-size:14px;} .slot-item{margin:4px 8px 4px 0;} .slot-del{color:#dc3545; margin-left:6px; text-decoration:none;} .slot-del:hover{text-decoration:underline;}</style>'
         f'<h3>증빙 업로드 - {title_text}</h3>'
         f'<div class="seq-btns">{seq_btns_html}</div>'
         f'<p>현재 선택된 슬롯: <b>{target_seq}번</b></p>'
+        f'<p style="margin-top:12px;"><strong>업로드된 파일</strong></p>{slots_html}'
         f"<form id=\"uploadForm\">파일 선택: <input type='file' id='file_input' accept='image/*' style='margin-bottom:10px;'><button type=\"button\" onclick=\"processAndUpload()\">전송하기</button></form><div id=\"status\"></div>"
         + script
     )
@@ -5065,13 +5130,16 @@ def arrival():
         let arrivalItems = {items_json};
         let editingArrivalId = null;
 
-        const STATUS_OPTIONS = ['도착', '공차', '상차', '하차', '퇴근'];
+        const STATUS_OPTIONS = ['도착', '공차', '상차', '하차', '휴차', '퇴근'];
 
         function getSortedArrivalItems(pageNum) {{
             const page = pageNum == null ? null : (typeof pageNum === 'number' ? pageNum : parseInt(pageNum, 10));
             const arr = page == null ? [...arrivalItems] : arrivalItems.filter(x => (x.page_idx == null ? 1 : x.page_idx) === page);
             const now = new Date();
             return arr.sort((a, b) => {{
+                const orderA = a.order_idx != null ? a.order_idx : 0;
+                const orderB = b.order_idx != null ? b.order_idx : 0;
+                if (orderA !== orderB) return orderA - orderB;
                 const ta = a.target_time ? new Date(a.target_time.replace(' ', 'T')) : null;
                 const tb = b.target_time ? new Date(b.target_time.replace(' ', 'T')) : null;
                 const aPast = !ta || ta <= now;
@@ -5339,13 +5407,26 @@ def arrival():
             }}).then(r => r.json()).then(res => {{
                 if (res.status === 'success') {{
                     const item = arrivalItems.find(i => i.id == id);
-                    if (item) item.status = status;
+                    if (item) {{
+                        item.status = status;
+                        if (status === '도착' || status === '공차' || status === '퇴근') item.target_time = null;
+                    }}
+                    // 공차/휴차: 순서 변경 반영을 위해 리스트 새로고침(페이지 리로드)
+                    if (status === '공차' || status === '휴차') {{
+                        location.reload();
+                        return;
+                    }}
                     const row = document.getElementById('arrival-row-' + id);
                     if (row) {{
                         row.querySelectorAll('.status-btn').forEach(btn => {{
                             btn.classList.toggle('active', btn.getAttribute('data-status') === status);
                         }});
                     }}
+                    const endEl = document.getElementById('end-time-' + id);
+                    if (endEl) endEl.textContent = '⏱ 타이머 종료: 시간 미지정';
+                    const editTimeEl = document.getElementById('edit-time-' + id);
+                    if (editTimeEl) editTimeEl.value = '';
+                    updateAllCountdowns();
                 }}
             }});
         }}
@@ -5386,12 +5467,14 @@ def arrival_update():
         return jsonify({"status": "error", "message": "invalid id"}), 400
     conn = sqlite3.connect('ledger.db', timeout=15)
     cursor = conn.cursor()
-    cursor.execute("SELECT content, content_important, content_color, content_font, content_font_size, target_time, COALESCE(status,'') FROM arrival_status WHERE id=?", (nid,))
+    cursor.execute("SELECT page_idx, order_idx, content, content_important, content_color, content_font, content_font_size, target_time, COALESCE(status,'') FROM arrival_status WHERE id=?", (nid,))
     row = cursor.fetchone()
     if not row:
         conn.close()
         return jsonify({"status": "error", "message": "not found"}), 404
-    content, content_important, content_color, content_font, content_font_size, target_time, status = row[0] or '', row[1] or '', row[2] or '#1a2a6c', row[3] or 'Malgun Gothic', row[4] or '16px', row[5], row[6] or ''
+    page_idx, order_idx, content, content_important, content_color, content_font, content_font_size, target_time, status = row[0], row[1], row[2] or '', row[3] or '', row[4] or '#1a2a6c', row[5] or 'Malgun Gothic', row[6] or '16px', row[7], row[8] or ''
+    if page_idx is None:
+        page_idx = 1
     if 'content' in d:
         content = d.get('content', '')
     if 'content_important' in d:
@@ -5406,9 +5489,19 @@ def arrival_update():
         target_time = d.get('target_time')
     if 'status' in d:
         status = str(d.get('status', '')).strip() or ''
-        if status not in ('도착', '공차', '상차', '하차', '퇴근'):
+        if status not in ('도착', '공차', '상차', '하차', '휴차', '퇴근'):
             status = ''
-    conn.execute("UPDATE arrival_status SET content=?, content_important=?, content_color=?, content_font=?, content_font_size=?, target_time=?, status=? WHERE id=?", (content, content_important, content_color, content_font, content_font_size, target_time, status, nid))
+        # 도착·공차·퇴근 누를 시 시간 초기화
+        if status in ('도착', '공차', '퇴근'):
+            target_time = None
+        # 공차: 리스트 최상단( order_idx 최소 - 1 ), 휴차: 리스트 최하단( order_idx 최대 + 1 )
+        if status == '공차':
+            r = cursor.execute("SELECT COALESCE(MIN(order_idx), 0) FROM arrival_status WHERE page_idx = ?", (page_idx,)).fetchone()
+            order_idx = (r[0] or 0) - 1
+        elif status == '휴차':
+            r = cursor.execute("SELECT COALESCE(MAX(order_idx), -1) + 1 FROM arrival_status WHERE page_idx = ?", (page_idx,)).fetchone()
+            order_idx = r[0] or 0
+    conn.execute("UPDATE arrival_status SET content=?, content_important=?, content_color=?, content_font=?, content_font_size=?, target_time=?, status=?, order_idx=? WHERE id=?", (content, content_important, content_color, content_font, content_font_size, target_time, status, order_idx, nid))
     conn.commit(); conn.close()
     return jsonify({"status": "success"})
 
