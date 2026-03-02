@@ -429,7 +429,7 @@ CALC_READONLY_KEYS = {'sup_val', 'vat1', 'total1', 'vat2', 'total2', 'net_profit
 # 순수입·부가세: 사용 안 함, 회색 처리
 UNUSED_GRAY_KEYS = {'net_profit', 'vat_final'}
 # 장부 수정란·목록에서 보이지 않게만 함 (삭제 아님, 데이터 유지). 맨끝 매출사업자구분(biz_issue) 사용 안 함 → 목록/정산에서 제외
-HIDDEN_LEDGER_KEYS = {'client_memo', 'tax_biz', 'biz_issue'}
+HIDDEN_LEDGER_KEYS = {'client_memo', 'tax_biz', 'biz_issue', 'domain'}
 
 def ledger_col_class(k):
     """컬럼별 배경 클래스: 기사=연한빨강, 업체=파랑, 미사용=회색"""
@@ -1155,12 +1155,12 @@ function loadLedgerList() {
                     let hasVal = false;
                     let onclickStr, btnLabel;
                     if(key==='tax_dt') {
-                        // 매출처 계산서발행일: 백엔드 미지원 — 날짜는 표시만, 버튼은 tax_chk만 저장
-                        hasVal = !!(item.tax_dt || '').toString().trim() || ((item.tax_chk||'').toString().trim() === '발행완료');
+                        // 매출처 계산서발행일: 날짜 직접 입력 + 버튼으로 오늘 날짜 토글
+                        hasVal = !!(item.tax_dt || '').toString().trim();
                         displayVal = (item.tax_dt || '').toString().trim().slice(0,10);
-                        let taxChkToggle = hasVal ? "''" : "'발행완료'";
-                        onclickStr = "changeStatus("+item.id+", 'tax_chk', "+taxChkToggle+")";
-                        btnLabel = hasVal ? '계산서 발행확인' : '미발행';
+                        let toggleVal = hasVal ? "''" : "'"+today+"'";
+                        onclickStr = "changeStatus("+item.id+", 'tax_dt', "+toggleVal+")";
+                        btnLabel = hasVal ? '계산서발급확인' : '미발행';
                     } else if(key==='mail_dt') {
                         hasVal = !!(item.mail_dt || '').toString().trim();
                         displayVal = (item.mail_dt || '').toString().trim().slice(0,10);
@@ -1190,9 +1190,6 @@ function loadLedgerList() {
                     let changeHandler = "changeStatus("+item.id+", '"+key+"', this.value || '')";
                     let btnHtml = '<button class="btn-status '+(hasVal?'bg-green':'bg-orange')+'" style="font-size:10px; padding:3px 6px;" onclick="'+onclickStr.replace(/"/g, '&quot;')+'">'+btnLabel+'</button>';
                     let taxBiz2Span = (key==='issue_dt' && (item.tax_biz2||'').trim()) ? '<span style="font-size:10px; color:#666;">'+((item.tax_biz2||'').trim().replace(/</g,'&lt;').replace(/>/g,'&gt;'))+'</span>' : '';
-                    if(key==='tax_dt') {
-                        return '<td'+tdCls+'><div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><span style="font-size:10px; color:#1976d2; font-weight:600;">'+(displayVal||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>'+btnHtml+'<span style="font-size:9px; color:#888;">'+label+'</span></div></td>';
-                    }
                     return '<td'+tdCls+'><div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="'+(dateInputVal.replace(/"/g,'&quot;'))+'" style="font-size:10px; width:95px; padding:2px; box-sizing:border-box;" onchange="'+changeHandler.replace(/"/g,'&quot;')+'"><span style="font-size:10px; color:#1976d2; font-weight:600;">'+(displayVal||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>'+btnHtml+taxBiz2Span+'<span style="font-size:9px; color:#888;">'+label+'</span></div></td>';
                 }
                 if(key === 'dispatch_dt') {
@@ -1418,15 +1415,19 @@ function loadLedgerList() {
         };
         function fillLedgerEditForm(item) {
             const dateOnlyKeys = ['order_dt', 'dispatch_dt'];
-            columnKeys.forEach(key => {
-                const input = document.querySelector('#ledgerEditForm [name="'+key+'"]');
-                if (!input || input.name === 'id') return;
+            const form = document.getElementById('ledgerEditForm');
+            if (!form) return;
+            form.querySelectorAll('[name]').forEach(function(input) {
+                const key = input.name;
+                if (key === 'id') return;
                 if (input.type === 'checkbox') {
                     input.checked = (item[key] === "✅" || item[key] === "1" || item[key] === "Y");
                     return;
                 }
                 let val = item[key] || '';
-                if (dateOnlyKeys.includes(key) && val) val = String(val).replace(' ', 'T').slice(0, 10);
+                if (dateOnlyKeys.includes(key) && val) {
+                    val = String(val).replace(' ', 'T').slice(0, 10);
+                }
                 input.value = val;
             });
         }
@@ -1544,7 +1545,7 @@ function loadLedgerList() {
         }
 
         var ledgerFormScrollId = 'ledgerFormScroll';
-        var ledgerListScrollIds = ['ledgerListScrollTop', 'ledgerListScroll', 'ledgerScrollBarFix'];
+        var ledgerListScrollIds = ['ledgerListScrollTop', 'ledgerListScroll'];
         let ledgerScrollPending = false, ledgerScrollSource = null, ledgerScrollIsList = false;
         function applyLedgerScroll() {
             ledgerScrollPending = false;
@@ -1606,10 +1607,6 @@ function loadLedgerList() {
             if (botEl) botEl.style.width = listEl.clientWidth + 'px';
         }
         function updateLedgerScrollBarWidth() {
-            var inner = document.getElementById('ledgerScrollBarFixInner');
-            var listEl = document.getElementById('ledgerListScroll');
-            if (!inner) return;
-            inner.style.width = (listEl && listEl.scrollWidth) ? listEl.scrollWidth + 'px' : '100px';
             updateLedgerListScrollWidths();
         }
         var ledgerResizeTimer = 0;
@@ -1815,7 +1812,6 @@ def index():
         </div>
         <div id="ledgerPagination" class="pagination"></div>
     </div>
-    <div id="ledgerScrollBarFix" class="ledger-scrollbar-fix"><div id="ledgerScrollBarFixInner" class="ledger-scrollbar-fix-inner"></div></div>
     <div id="ledgerEditModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.5);">
         <style>#ledgerEditForm input {{ width:100%; padding:6px 8px; font-size:12px; box-sizing:border-box; }}</style>
         <div style="background:white; width:96%; max-width:1100px; margin:20px auto; padding:20px; border-radius:10px; max-height:90vh; overflow:hidden; display:flex; flex-direction:column;">
@@ -2033,7 +2029,7 @@ def settlement():
             if q_status == 'cond_pay' and pay_status != '조건부미지급': continue
             if q_status == 'done_in' and not in_dt: continue
             if q_status == 'done_out' and not out_dt: continue
-            if q_status == 'tax_issued' and not _tax_ok: continue   # 매출처계산서 발행확인
+            if q_status == 'tax_issued' and not _tax_ok: continue   # 매출처계산서 발급확인
             if q_status == 'tax_not_issued' and _tax_ok: continue   # 매출처계산서 미발행
             if q_status == 'issue_done' and not _issue_ok: continue # 공급자계산서발행일 확인완료
             if q_status == 'issue_not_done' and _issue_ok: continue # 공급자계산서발행일 미발행
@@ -2099,7 +2095,7 @@ def settlement():
         tax_dt_span = f'<span style="font-size:10px; color:#1976d2;">{tax_dt_val}</span>' if tax_dt_val else ''
         out_dt_span = f'<span style="font-size:10px; color:#1976d2;">{out_dt_val}</span>' if out_dt_val else ''
         mail_dt_span = f'<span style="font-size:10px; color:#1976d2;">{mail_dt_val}</span>' if mail_dt_val else ''
-        tax_label = '계산서 발행확인' if tax_chk_ok else '미발행'
+        tax_label = '계산서발급확인' if tax_chk_ok else '미발행'
         misu_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{in_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'in_dt\', this.value)">{in_dt_span}<button class="btn-status {row["m_cl"]}" onclick="changeStatus({row["id"]}, \'in_dt\', {in_dt_toggle})">{row["m_st"]}</button></div>'
         tax_issued_btn = f'<button class="btn-status {"bg-green" if tax_chk_ok else "bg-orange"}" onclick="changeStatus({row["id"]}, \'tax_chk\', {tax_chk_toggle})">{tax_label}</button>'
         tax_cell = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{tax_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'tax_dt\', this.value)">{tax_dt_span}<div>{tax_issued_btn}</div></div>'
@@ -2219,7 +2215,7 @@ def settlement():
             <option value="cond_pay" {'selected' if q_status=='cond_pay' else ''}>조건부미지급</option>
             <option value="done_in" {'selected' if q_status=='done_in' else ''}>수금완료</option>
             <option value="done_out" {'selected' if q_status=='done_out' else ''}>지급완료</option>
-            <option value="tax_issued" {'selected' if q_status=='tax_issued' else ''}>매출처계산서 발행확인</option>
+            <option value="tax_issued" {'selected' if q_status=='tax_issued' else ''}>매출처계산서 발급확인</option>
             <option value="tax_not_issued" {'selected' if q_status=='tax_not_issued' else ''}>매출처계산서 미발행</option>
             <option value="issue_done" {'selected' if q_status=='issue_done' else ''}>공급자계산서발행일 확인완료</option>
             <option value="issue_not_done" {'selected' if q_status=='issue_not_done' else ''}>공급자계산서발행일 미발행</option>
@@ -2245,11 +2241,9 @@ def settlement():
     <div class="scroll-sticky-wrap">
     <div class="scroll-top" id="settlementScrollTop"><table><thead><tr><th>로그</th><th>오더일</th><th>배차일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>매입처 합산발행</th><th>매입처현금</th><th>지급운임</th><th>매입 부가세</th><th>매입 합계</th><th>지급상태</th><th>매입계산서 사진</th><th>공급자 계산서발행일</th><th>수금운임</th><th>매출 부가세</th><th>매출 합계</th><th>수금상태</th><th>매출처현금</th><th>매출처 합산발행</th><th>매출처명</th><th>매출처 계산서발행일</th><th>인수증전송일</th><th>매출처인수증 사진</th></tr></thead><tbody><tr><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr></tbody></table></div>
     <div class="scroll-x" id="settlementScroll"><table id="settlementTable"><thead><tr><th data-sort="order-no" style="cursor:pointer;" title="클릭 시 오름/내림차순">로그 ↕</th><th data-sort="order-dt" style="cursor:pointer;" title="클릭 시 오름/내림차순">오더일 ↕</th><th data-sort="dispatch-dt" style="cursor:pointer;" title="클릭 시 오름/내림차순">배차일 ↕</th><th data-sort="route" style="cursor:pointer;" title="클릭 시 오름/내림차순">노선 ↕</th><th data-sort="d-name" style="cursor:pointer;" title="클릭 시 오름/내림차순">기사명 ↕</th><th data-sort="c-num" style="cursor:pointer;" title="클릭 시 오름/내림차순">차량번호 ↕</th><th data-sort="me-d" style="cursor:pointer;" title="클릭 시 오름/내림차순">매입처 합산발행 ↕</th><th>매입처현금</th><th data-sort="fee-out" style="cursor:pointer;" title="클릭 시 오름/내림차순">지급운임 ↕</th><th data-sort="vat2" style="cursor:pointer;" title="클릭 시 오름/내림차순">매입 부가세 ↕</th><th data-sort="total2" style="cursor:pointer;" title="클릭 시 오름/내림차순">매입 합계 ↕</th><th data-sort="p-st" style="cursor:pointer;" title="클릭 시 오름/내림차순">지급상태 ↕</th><th data-sort="has-tax" style="cursor:pointer;" title="클릭 시 오름/내림차순">매입계산서 사진 ↕</th><th data-sort="issue-dt" style="cursor:pointer;" title="클릭 시 오름/내림차순">공급자 계산서발행일 ↕</th><th data-sort="supply" style="cursor:pointer;" title="클릭 시 오름/내림차순">수금운임 ↕</th><th data-sort="vat1" style="cursor:pointer;" title="클릭 시 오름/내림차순">매출 부가세 ↕</th><th data-sort="total1" style="cursor:pointer;" title="클릭 시 오름/내림차순">매출 합계 ↕</th><th data-sort="m-st" style="cursor:pointer;" title="클릭 시 오름/내림차순">수금상태 ↕</th><th>매출처현금</th><th data-sort="me-c" style="cursor:pointer;" title="클릭 시 오름/내림차순">매출처 합산발행 ↕</th><th data-sort="client-name" style="cursor:pointer;" title="클릭 시 오름/내림차순">매출처명 ↕</th><th data-sort="tax-chk" style="cursor:pointer;" title="클릭 시 오름/내림차순">매출처 계산서발행일 ↕</th><th data-sort="mail" style="cursor:pointer;" title="클릭 시 오름/내림차순">인수증전송일 ↕</th><th data-sort="has-ship" style="cursor:pointer;" title="클릭 시 오름/내림차순">매출처인수증 사진 ↕</th></tr></thead><tbody>{table_rows}</tbody></table></div>
-    <div class="scroll-top" id="settlementScrollBottom" style="margin-top:4px;"><table><thead><tr><th>로그</th><th>오더일</th><th>배차일</th><th>노선</th><th>기사명</th><th>차량번호</th><th>매입처 합산발행</th><th>매입처현금</th><th>지급운임</th><th>매입 부가세</th><th>매입 합계</th><th>지급상태</th><th>매입계산서 사진</th><th>공급자 계산서발행일</th><th>수금운임</th><th>매출 부가세</th><th>매출 합계</th><th>수금상태</th><th>매출처현금</th><th>매출처 합산발행</th><th>매출처명</th><th>매출처 계산서발행일</th><th>인수증전송일</th><th>매출처인수증 사진</th></tr></thead><tbody><tr><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr></tbody></table></div>
     </div>
     {settlement_totals_html}
     <div class="pagination">{pagination_html}</div></div>
-    <div id="settlementScrollBarFix" class="ledger-scrollbar-fix"><div id="settlementScrollBarFixInner" class="ledger-scrollbar-fix-inner"></div></div>
     <div id="logModal" style="display:none; position:fixed; z-index:9999; left:0; top:0; width:100%; height:100%; background:rgba(0,0,0,0.6);">
         <div style="background:white; width:90%; max-width:800px; margin:50px auto; padding:20px; border-radius:10px; box-shadow:0 5px 15px rgba(0,0,0,0.3);">
             <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #1a2a6c; padding-bottom:10px; margin-bottom:15px;">
@@ -2364,30 +2358,23 @@ def settlement():
         const topEl = document.getElementById('settlementScrollTop');
         const mainEl = document.getElementById('settlementScroll');
         const botEl = document.getElementById('settlementScrollBottom');
-        const barEl = document.getElementById('settlementScrollBarFix');
-        const barInner = document.getElementById('settlementScrollBarFixInner');
         if (!topEl || !mainEl) return;
         function matchWidth() {{
             const mainTbl = mainEl.querySelector('table');
             const topTbl = topEl.querySelector('table');
-            const botTbl = botEl ? botEl.querySelector('table') : null;
             if (mainTbl && topTbl) {{
                 const mainRow = mainTbl.querySelector('thead tr') || mainTbl.querySelector('tr');
                 const topRow = topTbl.querySelector('tr');
-                const botRow = botTbl ? botTbl.querySelector('tr') : null;
                 if (mainRow && topRow && mainRow.cells.length === topRow.cells.length) {{
                     for (let i = 0; i < mainRow.cells.length; i++) {{
                         const w = mainRow.cells[i].offsetWidth;
                         topRow.cells[i].style.width = w + 'px';
                         topRow.cells[i].style.minWidth = w + 'px';
-                        if (botRow && botRow.cells[i]) {{ botRow.cells[i].style.width = w + 'px'; botRow.cells[i].style.minWidth = w + 'px'; }}
                     }}
                 }}
             }}
             const w = mainEl.clientWidth;
             topEl.style.width = w + 'px';
-            if (botEl) botEl.style.width = w + 'px';
-            if (barInner) barInner.style.width = (mainEl.scrollWidth || 100) + 'px';
         }}
         var settleScrollPending = false, settleScrollSrc = null;
         function applySettleScroll() {{
@@ -2397,8 +2384,6 @@ def settlement():
             var left = src.scrollLeft;
             if (topEl.scrollLeft !== left) topEl.scrollLeft = left;
             if (mainEl.scrollLeft !== left) mainEl.scrollLeft = left;
-            if (botEl && botEl.scrollLeft !== left) botEl.scrollLeft = left;
-            if (barEl && barEl.scrollLeft !== left) barEl.scrollLeft = left;
             try {{ sessionStorage.setItem('settlement_scroll', JSON.stringify({{ left: mainEl.scrollLeft, top: mainEl.scrollTop }})); }} catch(e) {{}}
         }}
         function syncSettle(e) {{
@@ -2410,8 +2395,6 @@ def settlement():
         var scrollOpt = {{ passive: true }};
         topEl.addEventListener('scroll', syncSettle, scrollOpt);
         mainEl.addEventListener('scroll', syncSettle, scrollOpt);
-        if (botEl) botEl.addEventListener('scroll', syncSettle, scrollOpt);
-        if (barEl) barEl.addEventListener('scroll', syncSettle, scrollOpt);
         var settleResizeTimer = 0;
         window.addEventListener('resize', function() {{
             if (settleResizeTimer) clearTimeout(settleResizeTimer);
@@ -2421,7 +2404,7 @@ def settlement():
         requestAnimationFrame(function() {{
             try {{
                 var saved = sessionStorage.getItem('settlement_scroll');
-                if (saved) {{ var p = JSON.parse(saved); mainEl.scrollLeft = p.left || 0; mainEl.scrollTop = p.top || 0; if (topEl.scrollLeft !== mainEl.scrollLeft) topEl.scrollLeft = mainEl.scrollLeft; if (botEl) botEl.scrollLeft = mainEl.scrollLeft; if (barEl) barEl.scrollLeft = mainEl.scrollLeft; }}
+                if (saved) {{ var p = JSON.parse(saved); mainEl.scrollLeft = p.left || 0; mainEl.scrollTop = p.top || 0; if (topEl.scrollLeft !== mainEl.scrollLeft) topEl.scrollLeft = mainEl.scrollLeft; }}
             }} catch(e) {{}}
         }});
     }})();
@@ -4443,6 +4426,12 @@ def ledger_upload():
     # 구 명칭 호환 (대표자명·대표자로 변경 후 업로드)
     header_to_key['매출결제처명'] = 'biz_owner'
     header_to_key['매출처담당자'] = 'c_mgr_name'
+    # 과거/신규 양식 헤더 공통 인식을 위한 공백 무시 매핑 (예: "매출처 계산서 발행일" vs "매출처 계산서발행일")
+    header_to_key_norm = {}
+    for h, k in header_to_key.items():
+        h_norm = re.sub(r'\s+', '', str(h))
+        if h_norm and h_norm not in header_to_key_norm:
+            header_to_key_norm[h_norm] = k
     keys = [c['k'] for c in FULL_COLUMNS]
     date_keys = {c['k'] for c in FULL_COLUMNS if c.get('t') == 'date'}
     checkbox_keys = {'month_end_client', 'month_end_driver'}  # 엑셀에 "확인" 있으면 체크(1)로 저장
@@ -4455,7 +4444,11 @@ def ledger_upload():
     for _, row in df.iterrows():
         data = {}
         for col in df.columns:
-            key = header_to_key.get(str(col).strip())
+            col_name = str(col).strip()
+            key = header_to_key.get(col_name)
+            if not key:
+                # 공백 제거 후 매칭 시도 (오늘 수정 이전에 다운로드한 엑셀 헤더와도 호환)
+                key = header_to_key_norm.get(re.sub(r'\s+', '', col_name))
             if key:
                 val = row.get(col, '')
                 try:
@@ -4612,8 +4605,8 @@ def recall_ledger_api(row_id):
     return jsonify({"status": "success", "id": new_id})
 
 
-# update_status에서 허용할 컬럼명 화이트리스트 (SQL injection 방지) — 매출처 계산서발행일(tax_dt)은 백엔드 미지원
-ALLOWED_STATUS_KEYS = {c['k'] for c in FULL_COLUMNS if c['k'] != 'tax_dt'} | {'tax_chk', 'is_mail_done'}
+# update_status에서 허용할 컬럼명 화이트리스트 (SQL injection 방지)
+ALLOWED_STATUS_KEYS = {c['k'] for c in FULL_COLUMNS} | {'tax_chk', 'is_mail_done'}  # 정산관리 연동용, 통합장부 탭에서는 미표시
 
 @app.route('/api/update_status', methods=['POST'])
 @login_required 
@@ -4639,6 +4632,15 @@ def update_status():
     if key == 'is_mail_done':
         val = '확인완료' if (val and str(val).strip() == '확인완료') else '미확인'
     cursor.execute(f"UPDATE ledger SET [{key}] = ? WHERE id = ?", (val, row_id))
+    # 계산서 발행완료 시 계산서발행일(tax_dt) 동시 설정, 취소 시 비움
+    if key == 'tax_chk':
+        tax_dt_val = now_kst().strftime('%Y-%m-%d') if (val == '발행완료') else ''
+        cursor.execute("UPDATE ledger SET tax_dt = ? WHERE id = ?", (tax_dt_val, row_id))
+    # tax_dt 변경 시 tax_chk 연동 (날짜 있음 → 발행완료, 없음 → '')
+    if key == 'tax_dt':
+        v = data.get('value')
+        tax_chk_val = '발행완료' if (v and str(v).strip()) else ''
+        cursor.execute("UPDATE ledger SET tax_chk = ? WHERE id = ?", (tax_chk_val, row_id))
     # 개인/고정: 기사관리와 연동 — 장부에서 변경 시 해당 기사의 기사관리(개인/고정)도 동기화
     if key == 'log_move':
         row = cursor.execute("SELECT d_name, c_num FROM ledger WHERE id = ?", (row_id,)).fetchone()
