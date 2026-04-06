@@ -1,5 +1,6 @@
 from flask import Flask, render_template_string, request, jsonify, send_file, session, redirect, url_for, make_response, Response
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 import pandas as pd
 
 # .env 파일 로드 (python-dotenv)
@@ -337,6 +338,22 @@ def _order_in_settlement_range(order_dt, q_order_start, q_order_end):
     return True
 
 
+def _ledger_yyyymmdd_in_range(dt_val, q_start, q_end):
+    """수금일(in_dt)·지급일(out_dt) 등 날짜 문자열이 start~end 안인지. 범위가 비어 있으면 통과."""
+    qs = (q_start or '').strip()
+    qe = (q_end or '').strip()
+    if not qs and not qe:
+        return True
+    d = ((dt_val or '')[:10]).strip() if dt_val else ''
+    if not d:
+        return False
+    if qs and d < qs:
+        return False
+    if qe and d > qe:
+        return False
+    return True
+
+
 def _normalize_settlement_status_param(q_status):
     """통계 등에서 쓰는 한글 상태값을 정산관리 status 코드와 동일하게 매핑(코드 문자열은 그대로)."""
     s = str(q_status or '').strip()
@@ -383,6 +400,122 @@ def _row_matches_q_tax_biz2(row, q_tax_biz2):
     q = qi.lower()
     v = str(row.get('tax_biz2') or '').lower()
     return q in v
+
+
+# 정산·통계: 매입사업자 구분 체크박스(홍진/에스엠/스퀘어) — DB에는 쉼표로 연결 저장
+TAX_BIZ2_CHECKBOX_TAGS = ('홍진', '에스엠', '스퀘어')
+
+
+def _tax_biz2_tags_from_args(tb2_hj, tb2_sm, tb2_sq):
+    tags = []
+    if str(tb2_hj or '').strip() == '1':
+        tags.append('홍진')
+    if str(tb2_sm or '').strip() == '1':
+        tags.append('에스엠')
+    if str(tb2_sq or '').strip() == '1':
+        tags.append('스퀘어')
+    return tags
+
+
+def _tax_biz2_parse_stored(s):
+    """저장 문자열에서 공식 태그만 고정 순서로 추출."""
+    if not s:
+        return []
+    raw = str(s).replace('，', ',')
+    parts = [p.strip() for p in raw.split(',') if p.strip()]
+    return [lab for lab in TAX_BIZ2_CHECKBOX_TAGS if lab in parts]
+
+
+def _tax_biz2_join_tags(tags):
+    return ','.join(tags)
+
+
+def _row_matches_tax_biz2_tags(row, tags):
+    if not tags:
+        return True
+    row = dict(row) if hasattr(row, 'keys') else row
+    v = str(row.get('tax_biz2') or '')
+    return any(t in v for t in tags)
+
+
+def _row_matches_tax_biz2_combined(row, tb2_tags, q_tax_biz2_legacy):
+    """체크박스 태그가 있으면 포함(OR) 매칭, 없으면 레거시 부분일치(q_tax_biz2)."""
+    if tb2_tags:
+        return _row_matches_tax_biz2_tags(row, tb2_tags)
+    return _row_matches_q_tax_biz2(row, q_tax_biz2_legacy)
+
+
+def _sql_append_tax_biz2(conditions, params, tb2_tags, q_tax_biz2_legacy):
+    if tb2_tags:
+        or_parts = ["COALESCE(tax_biz2,'') LIKE ?" for _ in tb2_tags]
+        conditions.append("(" + " OR ".join(or_parts) + ")")
+        for t in tb2_tags:
+            params.append(f"%{t}%")
+    elif (q_tax_biz2_legacy or '').strip():
+        conditions.append("COALESCE(tax_biz2,'') LIKE ?")
+        params.append(f"%{(q_tax_biz2_legacy or '').strip()}%")
+
+
+def _settlement_tax_biz2_cell_html(rid, tax_biz2_raw):
+    tags = set(_tax_biz2_parse_stored(tax_biz2_raw))
+    parts = []
+    for lab in TAX_BIZ2_CHECKBOX_TAGS:
+        ch = ' checked' if lab in tags else ''
+        parts.append(
+            f'<label style="font-size:10px; white-space:nowrap; margin-right:4px; cursor:pointer;">'
+            f'<input type="checkbox"{ch} data-tb2-tag="{html.escape(lab)}" onchange="settlementTaxBiz2Commit({rid}, this)"> {html.escape(lab)}</label>'
+        )
+    return (
+        f'<div class="tax-biz2-checks" style="display:flex; flex-direction:column; gap:2px; align-items:flex-start;">'
+        f'{"".join(parts)}</div>'
+    )
+
+
+def _sql_append_biz_issue_tags(conditions, params, sb2_tags, q_biz_issue_legacy):
+    """매출사업자구분: 체크박스 태그(OR) 또는 레거시 자유 검색 — pay_to·biz_issue 모두 검색."""
+    if sb2_tags:
+        or_parts = []
+        for _ in sb2_tags:
+            or_parts.append("(COALESCE(pay_to,'') LIKE ? OR COALESCE(biz_issue,'') LIKE ?)")
+        conditions.append("(" + " OR ".join(or_parts) + ")")
+        for t in sb2_tags:
+            pat = f"%{t}%"
+            params.extend([pat, pat])
+    else:
+        _append_ledger_q_biz_issue_sql(conditions, params, q_biz_issue_legacy)
+
+
+def _row_matches_biz_issue_tags(row, tags):
+    if not tags:
+        return True
+    row = dict(row) if hasattr(row, 'keys') else row
+    pay_to = str(row.get('pay_to') or '')
+    biz_issue = str(row.get('biz_issue') or '')
+    return any((t in pay_to or t in biz_issue) for t in tags)
+
+
+def _row_matches_biz_issue_combined(row, sb2_tags, q_biz_issue_legacy):
+    if sb2_tags:
+        return _row_matches_biz_issue_tags(row, sb2_tags)
+    return _row_matches_q_biz_issue(row, q_biz_issue_legacy)
+
+
+def _settlement_pay_to_cell_html(rid, pay_to_raw):
+    """매출사업자구분(pay_to): 홍진/에스엠/스퀘어 체크 — 기타 토큰(개인·법인 등)은 쉼표 유지 후 저장 시 병합."""
+    raw = str(pay_to_raw or '')
+    picked = set(_tax_biz2_parse_stored(raw))
+    raw_attr = html.escape(raw, quote=True)
+    parts = []
+    for lab in TAX_BIZ2_CHECKBOX_TAGS:
+        ch = ' checked' if lab in picked else ''
+        parts.append(
+            f'<label style="font-size:10px; white-space:nowrap; margin-right:4px; cursor:pointer;">'
+            f'<input type="checkbox"{ch} data-sb2-tag="{html.escape(lab)}" onchange="settlementSalesBizCommit({rid}, this)"> {html.escape(lab)}</label>'
+        )
+    return (
+        f'<div class="sales-biz-checks" data-pay-to-raw="{raw_attr}" style="display:flex; flex-direction:column; gap:2px; align-items:flex-start;">'
+        f'{"".join(parts)}</div>'
+    )
 
 
 def _ledger_driver_pay_memo_str(row):
@@ -505,6 +638,67 @@ def login_required(f):
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
+
+
+def admin_required(f):
+    """관리자(is_admin) 전용 — 계정 관리 API·화면."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session:
+            return redirect(url_for('login'))
+        if not session.get('is_admin'):
+            if request.path.startswith('/api/'):
+                return jsonify({"status": "error", "message": "관리자만 접근할 수 있습니다."}), 403
+            return Response(
+                '<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>권한 없음</title></head>'
+                '<body style="font-family:sans-serif;padding:24px;"><p>관리자만 접근할 수 있습니다.</p>'
+                '<p><a href="/">메인으로</a></p></body></html>',
+                status=403,
+                mimetype='text/html; charset=utf-8',
+            )
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def _viewer_forbidden_response():
+    """읽기 전용(view) 계정 안내 응답."""
+    msg = '읽기 전용 계정입니다. 등록·수정·삭제 권한이 없습니다.'
+    if request.path.startswith('/api/') or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify({"status": "error", "message": msg}), 403
+    return Response(
+        f'<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>권한 없음</title></head>'
+        f'<body style="font-family:sans-serif;padding:24px;"><p>{msg}</p><p><a href="/">메인으로</a></p></body></html>',
+        status=403,
+        mimetype='text/html; charset=utf-8',
+    )
+
+
+@app.before_request
+def _enforce_session_and_readonly():
+    # 구세션: role 없으면 기존과 동일하게 전체 권한으로 간주
+    if session.get('logged_in') and 'role' not in session:
+        session['role'] = 'edit'
+        session['is_admin'] = True
+    if not session.get('logged_in'):
+        return
+    role = session.get('role', 'edit')
+    if role != 'view':
+        return
+    p = request.path
+    # DB 전체 백업 다운로드는 보기 권한에서 제한
+    if request.method == 'GET' and p in ('/api/download-db', '/download-db', '/download-all'):
+        return _viewer_forbidden_response()
+    if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+        return _viewer_forbidden_response()
+
+
+@app.context_processor
+def _inject_permissions():
+    return dict(
+        session_role=session.get('role', 'edit'),
+        session_is_admin=bool(session.get('is_admin')),
+    )
+
 
 # 이미지 업로드 폴더 설정
 UPLOAD_FOLDER = 'static/evidences'
@@ -820,6 +1014,23 @@ def init_db():
     except Exception:
         pass
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS app_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'edit' CHECK (role IN ('view', 'edit')),
+            is_admin INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    cursor.execute("SELECT COUNT(*) FROM app_users")
+    if cursor.fetchone()[0] == 0:
+        h = generate_password_hash(str(ADMIN_PW))
+        cursor.execute(
+            "INSERT INTO app_users (username, password_hash, role, is_admin) VALUES (?,?,?,?)",
+            (str(ADMIN_ID).strip(), h, 'edit', 1),
+        )
+
     conn.commit()
     conn.close()
 
@@ -1042,6 +1253,7 @@ BASE_HTML = """
             <a href="/statistics">통계분석</a>
             <a href="/manage_drivers">기사관리</a>
             <a href="/manage_clients">업체관리</a>
+            {% if session_is_admin %}<a href="/admin">관리</a>{% endif %}
         </div>
         <div>
             <a href="/logout" style="background:#e74c3c; padding:5px 10px; border-radius:3px; color:white;">로그아웃</a>
@@ -1056,6 +1268,7 @@ BASE_HTML = """
     </div>
 
   <script>
+    window.APP_READ_ONLY = {{ 'true' if session_role == 'view' else 'false' }};
     let drivers = {{ drivers_json | safe }};
     let clients = {{ clients_json | safe }};
     let columnKeys = {{ col_keys | safe }};
@@ -1557,6 +1770,11 @@ function loadLedgerList() {
                     let title = (key==='pre_post_chk') ? '선착불확인' : (key==='month_end_client'?'매출처 합산발행':'매입처 합산발행');
                     return `<td${tdCls} style="text-align:center;"><input type="checkbox" ${checked ? 'checked' : ''} onchange="changeStatus(${item.id}, '${key}', this.checked ? '1' : '')" title="${title}"></td>`;
                 }
+                if(key === 'pre_post') {
+                    let disp = (val === null || val === undefined || val === '') ? NaN : parseFloat(val);
+                    let fmt = (!isNaN(disp)) ? Math.round(disp).toLocaleString() : '';
+                    return `<td${tdCls} style="text-align:right;">${fmt}</td>`;
+                }
                 if(key === 'pay_method_client') {
                     let isCash = (item.pay_method_client || '').trim() === '현금';
                     return `<td${tdCls} style="white-space:nowrap; text-align:center;"><button class="btn-status" style="font-size:10px; padding:5px 8px; ${isCash ? 'background:#e67e22; color:white;' : 'background:#ebf2ff; color:#1a2a6c;'}" onclick="changeStatus(${item.id}, 'pay_method_client', '${isCash ? '이체' : '현금'}')">${isCash ? '현금확인' : '발행'}</button></td>`;
@@ -2052,18 +2270,37 @@ LOGIN_HTML = """
 def login():
     error = None
     if request.method == 'POST':
-        username = request.form.get('username', '')
-        password = request.form.get('password', '')
-        if username == ADMIN_ID and password == ADMIN_PW:
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
+        init_db()
+        conn = connect_ledger()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM app_users WHERE username = ?", (username,)).fetchone()
+        conn.close()
+        ok = False
+        user_row = None
+        if row:
+            d = dict(row)
+            if check_password_hash(d.get('password_hash') or '', password):
+                ok = True
+                user_row = d
+        if not ok and username == str(ADMIN_ID).strip() and password == ADMIN_PW:
+            ok = True
+            user_row = {'id': None, 'username': ADMIN_ID, 'role': 'edit', 'is_admin': 1}
+        if ok and user_row:
             session['logged_in'] = True
-            # 로그인 시 자동 백업
+            session['user_id'] = user_row.get('id')
+            session['username'] = user_row.get('username') or username
+            session['role'] = str(user_row.get('role') or 'edit').strip() or 'edit'
+            if session['role'] not in ('view', 'edit'):
+                session['role'] = 'edit'
+            session['is_admin'] = bool(user_row.get('is_admin'))
             try:
                 backup_all("login")
             except Exception as e:
                 print(f"[backup_all login error] {e}")
             return redirect(url_for('index'))
-        else:
-            error = "아이디 또는 비밀번호가 올바르지 않습니다."
+        error = "아이디 또는 비밀번호가 올바르지 않습니다."
     return render_template_string(LOGIN_HTML, error=error)
 
 @app.errorhandler(500)
@@ -2079,6 +2316,10 @@ def handle_internal_error(e):
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
+    session.pop('user_id', None)
+    session.pop('username', None)
+    session.pop('role', None)
+    session.pop('is_admin', None)
     # 로그아웃 시 자동 백업
     try:
         backup_all("logout")
@@ -2284,8 +2525,16 @@ def settlement():
     q_in_name = _arg_str('q_in_name')
     q_phone = _arg_str('q_phone')
     q_vendor = _arg_str('vendor')
-    q_tax_biz2 = _arg_str('q_tax_biz2')   # 매입사업자 구분 검색
-    q_biz_issue = _arg_str('q_biz_issue') # 매출사업자 구분 검색
+    q_tax_biz2 = _arg_str('q_tax_biz2')   # 매입사업자 구분 레거시(자유 텍스트) 검색
+    q_tb2_hj = _arg_str('tb2_hj')
+    q_tb2_sm = _arg_str('tb2_sm')
+    q_tb2_sq = _arg_str('tb2_sq')
+    q_tb2_tags = _tax_biz2_tags_from_args(q_tb2_hj, q_tb2_sm, q_tb2_sq)
+    q_biz_issue = _arg_str('q_biz_issue') # 매출사업자 구분 레거시(자유 텍스트) 검색
+    q_sb2_hj = _arg_str('sb2_hj')
+    q_sb2_sm = _arg_str('sb2_sm')
+    q_sb2_sq = _arg_str('sb2_sq')
+    q_sb2_tags = _tax_biz2_tags_from_args(q_sb2_hj, q_sb2_sm, q_sb2_sq)
     q_start = _arg_str('start')
     q_end = _arg_str('end')
     q_filter_pay_client = _arg_str('filter_pay_client')   # ''=전체, 1=현금확인, 0=발행
@@ -2301,6 +2550,10 @@ def settlement():
     # 성능: 날짜·이름 필터를 SQL로 적용 (기본 검색 기준일 = 배차일)
     q_order_start = _arg_str('order_start')
     q_order_end = _arg_str('order_end')
+    q_in_dt_start = _arg_str('in_dt_start')
+    q_in_dt_end = _arg_str('in_dt_end')
+    q_out_dt_start = _arg_str('out_dt_start')
+    q_out_dt_end = _arg_str('out_dt_end')
     query = "SELECT * FROM ledger"
     params = []
     conditions = []
@@ -2316,6 +2569,18 @@ def settlement():
     if q_order_end:
         conditions.append("order_dt <= ?")
         params.append(q_order_end)
+    if q_in_dt_start:
+        conditions.append("in_dt IS NOT NULL AND TRIM(COALESCE(in_dt,'')) != '' AND substr(in_dt,1,10) >= ?")
+        params.append(q_in_dt_start)
+    if q_in_dt_end:
+        conditions.append("in_dt IS NOT NULL AND TRIM(COALESCE(in_dt,'')) != '' AND substr(in_dt,1,10) <= ?")
+        params.append(q_in_dt_end)
+    if q_out_dt_start:
+        conditions.append("out_dt IS NOT NULL AND TRIM(COALESCE(out_dt,'')) != '' AND substr(out_dt,1,10) >= ?")
+        params.append(q_out_dt_start)
+    if q_out_dt_end:
+        conditions.append("out_dt IS NOT NULL AND TRIM(COALESCE(out_dt,'')) != '' AND substr(out_dt,1,10) <= ?")
+        params.append(q_out_dt_end)
     if q_name:
         name_part = q_name
         add_id_condition = False
@@ -2349,10 +2614,8 @@ def settlement():
     if q_vendor:
         conditions.append("COALESCE(tax_biz_name,'') LIKE ?")
         params.append(f"%{q_vendor}%")
-    if q_tax_biz2:
-        conditions.append("COALESCE(tax_biz2,'') LIKE ?")
-        params.append(f"%{q_tax_biz2}%")
-    _append_ledger_q_biz_issue_sql(conditions, params, q_biz_issue)
+    _sql_append_tax_biz2(conditions, params, q_tb2_tags, '' if q_tb2_tags else q_tax_biz2)
+    _sql_append_biz_issue_tags(conditions, params, q_sb2_tags, '' if q_sb2_tags else q_biz_issue)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY CASE WHEN dispatch_dt IS NULL OR dispatch_dt = '' THEN 1 ELSE 0 END, dispatch_dt DESC, id DESC"
@@ -2388,6 +2651,10 @@ def settlement():
         # 오더일 추가 검색
         if q_order_start and order_dt < q_order_start: continue
         if q_order_end and order_dt > q_order_end: continue
+        if not _ledger_yyyymmdd_in_range(in_dt, q_in_dt_start, q_in_dt_end):
+            continue
+        if not _ledger_yyyymmdd_in_range(out_dt, q_out_dt_start, q_out_dt_end):
+            continue
         
         # 이름 필터 (매입처/매출처명·업체/기사명 + 오더고유번호 n01, n02 또는 숫자만 01, 12 등)
         if q_name:
@@ -2541,13 +2808,14 @@ def settlement():
         issue_dt_toggle = f"'{today.strftime('%Y-%m-%d')}'" if not issue_dt_val else "''"
         issue_dt_span = f'<span style="font-size:10px; color:#1976d2;">{issue_dt_val}</span>' if issue_dt_val else ''
         tax_biz2_val = (row.get('tax_biz2') or '').strip()
-        tax_biz2_span = f'<span style="font-size:10px; color:#666;">{tax_biz2_val}</span>' if tax_biz2_val else ''
         issue_confirmed = bool(issue_dt_val)
         issue_btn = f'<div style="display:flex; flex-direction:column; align-items:center; gap:2px;"><input type="date" value="{issue_dt_val}" style="font-size:10px; width:95px; padding:2px;" onchange="changeStatus({row["id"]}, \'issue_dt\', this.value)">{issue_dt_span}<button class="btn-status {"bg-green" if issue_confirmed else "bg-orange"}" onclick="changeStatus({row["id"]}, \'issue_dt\', {issue_dt_toggle})">{"확인완료" if issue_confirmed else "미확인"}</button></div>'
 
         me_c = (str(row.get('month_end_client') or '').strip() in ('1', 'Y'))
         me_d = (str(row.get('month_end_driver') or '').strip() in ('1', 'Y'))
         rid = row['id']
+        tax_biz2_cell = _settlement_tax_biz2_cell_html(rid, row.get('tax_biz2'))
+        pay_to_cell = _settlement_pay_to_cell_html(rid, row.get('pay_to'))
         is_cash_c = (str(row.get('pay_method_client') or '').strip() == '현금')
         is_cash_d = (str(row.get('pay_method_driver') or '').strip() == '현금')
         # 매입처현금 탭 (기사): 표기 발행/현금확인, 백엔드 값은 이체/현금 유지. 기본=발행, 클릭 시 현금확인
@@ -2621,17 +2889,29 @@ def settlement():
                 <button type="button" class="btn-status" style="font-size:10px; padding:2px 6px; margin-top:2px; background:#e3f2fd; color:#1a2a6c;" onclick="viewSettlementClientInfo({row['id']})" title="매출처(업체) 정보">매출처</button>
                 <button type="button" class="btn-status" style="font-size:10px; padding:2px 6px; margin-left:2px; margin-top:2px; background:#ffebee; color:#b71c1c;" onclick="viewSettlementVendorInfo({row['id']})" title="매입처(기사) 정보">매입처</button>
             </td>
-            <td>{row['order_dt']}</td><td>{_dispatch_dt}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td style="text-align:center;">{month_end_driver_cell}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{row.get('tax_biz_name') or ''}</td><td style="text-align:center;">{pay_driver_tabs}</td><td>{issue_btn}</td><td>{tax_biz2_val or ''}</td><td style="text-align:center;">{pre_post_chk_cell}</td><td>{(f"{pre_post_val:,}" if pre_post_val else "")}</td><td>{fee_val:,}</td><td>{supply_val_disp}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td style="text-align:center;">{pay_client_tabs}</td><td style="text-align:center;">{month_end_client_cell}</td><td>{row['client_name']}</td><td>{tax_cell}</td><td>{_tax_biz_s or ''}</td><td>{mail_btn}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td></tr>"""
+            <td>{row['order_dt']}</td><td>{_dispatch_dt}</td><td>{row['route']}</td><td>{row['d_name']}</td><td>{row['c_num']}</td><td style="text-align:center;">{month_end_driver_cell}</td><td>{fee_out_val:,}</td><td>{vat2:,}</td><td>{total2:,}</td><td>{pay_btn}</td><td>{make_direct_links(row['id'], 'tax', row['tax_img'])}</td><td>{row.get('tax_biz_name') or ''}</td><td style="text-align:center;">{pay_driver_tabs}</td><td>{issue_btn}</td><td>{tax_biz2_cell}</td><td style="text-align:center;">{pre_post_chk_cell}</td><td>{(f"{pre_post_val:,}" if pre_post_val else "")}</td><td>{fee_val:,}</td><td>{supply_val_disp}</td><td>{vat1:,}</td><td>{total1:,}</td><td>{misu_btn}</td><td style="text-align:center;">{pay_client_tabs}</td><td style="text-align:center;">{month_end_client_cell}</td><td>{row['client_name']}</td><td>{tax_cell}</td><td>{pay_to_cell}</td><td>{mail_btn}</td><td>{make_direct_links(row['id'], 'ship', row['ship_img'])}</td></tr>"""
     
     if request.args.get('fragment'):
         return Response(table_rows, mimetype='text/html; charset=utf-8')
     
     def _settlement_query(page_num=None):
-        qdict = {'status': q_status, 'name': q_name, 'start': q_start, 'end': q_end, 'order_start': q_order_start, 'order_end': q_order_end, 'per_page': per_page}
+        qdict = {
+            'status': q_status, 'name': q_name, 'start': q_start, 'end': q_end,
+            'order_start': q_order_start, 'order_end': q_order_end,
+            'in_dt_start': q_in_dt_start, 'in_dt_end': q_in_dt_end,
+            'out_dt_start': q_out_dt_start, 'out_dt_end': q_out_dt_end,
+            'per_page': per_page,
+        }
         if q_c_num: qdict['c_num'] = q_c_num
         if q_vendor: qdict['vendor'] = q_vendor
-        if q_tax_biz2: qdict['q_tax_biz2'] = q_tax_biz2
-        if q_biz_issue: qdict['q_biz_issue'] = q_biz_issue
+        if q_tb2_hj == '1': qdict['tb2_hj'] = '1'
+        if q_tb2_sm == '1': qdict['tb2_sm'] = '1'
+        if q_tb2_sq == '1': qdict['tb2_sq'] = '1'
+        if q_tax_biz2 and not q_tb2_tags: qdict['q_tax_biz2'] = q_tax_biz2
+        if q_sb2_hj == '1': qdict['sb2_hj'] = '1'
+        if q_sb2_sm == '1': qdict['sb2_sm'] = '1'
+        if q_sb2_sq == '1': qdict['sb2_sq'] = '1'
+        if q_biz_issue and not q_sb2_tags: qdict['q_biz_issue'] = q_biz_issue
         if q_amount: qdict['q_amount'] = q_amount
         if q_client: qdict['q_client'] = q_client
         if q_in_name: qdict['q_in_name'] = q_in_name
@@ -2647,11 +2927,21 @@ def settlement():
 
     _settlement_export_params = {
         'status': q_status, 'name': q_name, 'c_num': q_c_num, 'vendor': q_vendor,
-        'q_tax_biz2': q_tax_biz2, 'q_biz_issue': q_biz_issue, 'q_amount': q_amount,
+        'q_amount': q_amount,
         'q_client': q_client, 'q_in_name': q_in_name, 'q_phone': q_phone,
         'start': q_start, 'end': q_end, 'order_start': q_order_start, 'order_end': q_order_end,
+        'in_dt_start': q_in_dt_start, 'in_dt_end': q_in_dt_end,
+        'out_dt_start': q_out_dt_start, 'out_dt_end': q_out_dt_end,
         'filter_pay_client': q_filter_pay_client, 'filter_pay_driver': q_filter_pay_driver,
     }
+    if q_tb2_hj == '1': _settlement_export_params['tb2_hj'] = '1'
+    if q_tb2_sm == '1': _settlement_export_params['tb2_sm'] = '1'
+    if q_tb2_sq == '1': _settlement_export_params['tb2_sq'] = '1'
+    if q_tax_biz2 and not q_tb2_tags: _settlement_export_params['q_tax_biz2'] = q_tax_biz2
+    if q_sb2_hj == '1': _settlement_export_params['sb2_hj'] = '1'
+    if q_sb2_sm == '1': _settlement_export_params['sb2_sm'] = '1'
+    if q_sb2_sq == '1': _settlement_export_params['sb2_sq'] = '1'
+    if q_biz_issue and not q_sb2_tags: _settlement_export_params['q_biz_issue'] = q_biz_issue
     if q_month_client: _settlement_export_params['month_end_client'] = '1'
     if q_month_driver: _settlement_export_params['month_end_driver'] = '1'
     if q_not_month_end_client: _settlement_export_params['not_month_end_client'] = '1'
@@ -2679,6 +2969,12 @@ def settlement():
         <strong style="margin-left:6px;">📅 오더일 (추가검색):</strong>
         <input type="date" name="order_start" value="{_qe(q_order_start)}" title="오더일 시작" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}"> ~ 
         <input type="date" name="order_end" value="{_qe(q_order_end)}" title="오더일 종료" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
+        <strong style="margin-left:6px;">💵 수금일 (수금상태·수금일 기준):</strong>
+        <input type="date" name="in_dt_start" value="{_qe(q_in_dt_start)}" title="수금일 시작" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}"> ~ 
+        <input type="date" name="in_dt_end" value="{_qe(q_in_dt_end)}" title="수금일 종료" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
+        <strong style="margin-left:6px;">💸 지급일 (지급상태·지급일 기준):</strong>
+        <input type="date" name="out_dt_start" value="{_qe(q_out_dt_start)}" title="지급일 시작" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}"> ~ 
+        <input type="date" name="out_dt_end" value="{_qe(q_out_dt_end)}" title="지급일 종료" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
         <strong>🔍 필터:</strong>
         <select name="status">
             <option value="">전체상태</option>
@@ -2705,9 +3001,17 @@ def settlement():
         <strong>🏢 매출처:</strong>
         <input type="text" name="q_client" value="{_qe(q_client)}" placeholder="매출처" style="width:90px;" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
         <strong>매입사업자 구분:</strong>
-        <input type="text" name="q_tax_biz2" value="{_qe(q_tax_biz2)}" placeholder="매입사업자 구분" style="width:100px;" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
+        <span style="font-size:12px; display:inline-flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <label style="white-space:nowrap;"><input type="checkbox" name="tb2_hj" value="1" {"checked" if q_tb2_hj == "1" else ""}> 홍진</label>
+        <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sm" value="1" {"checked" if q_tb2_sm == "1" else ""}> 에스엠</label>
+        <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sq" value="1" {"checked" if q_tb2_sq == "1" else ""}> 스퀘어</label>
+        </span>
         <strong>매출사업자 구분:</strong>
-        <input type="text" name="q_biz_issue" value="{_qe(q_biz_issue)}" placeholder="매출사업자 구분" style="width:100px;" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
+        <span style="font-size:12px; display:inline-flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <label style="white-space:nowrap;"><input type="checkbox" name="sb2_hj" value="1" {"checked" if q_sb2_hj == "1" else ""}> 홍진</label>
+        <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sm" value="1" {"checked" if q_sb2_sm == "1" else ""}> 에스엠</label>
+        <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sq" value="1" {"checked" if q_sb2_sq == "1" else ""}> 스퀘어</label>
+        </span>
         <strong>👤 입금자명:</strong>
         <input type="text" name="q_in_name" value="{_qe(q_in_name)}" placeholder="입금자명" style="width:90px;" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
         <strong>📞 전화번호:</strong>
@@ -2814,6 +3118,33 @@ def settlement():
                 else alert(res.message || '반영 실패');
             }})
             .catch(function() {{ alert('저장 요청에 실패했습니다.'); }});
+    }};
+    window.settlementTaxBiz2Commit = function(rid, el) {{
+        var wrap = el.closest('.tax-biz2-checks');
+        if (!wrap) return;
+        var order = ['홍진', '에스엠', '스퀘어'];
+        var out = [];
+        for (var i = 0; i < order.length; i++) {{
+            var cb = wrap.querySelector('input[data-tb2-tag="' + order[i] + '"]');
+            if (cb && cb.checked) out.push(order[i]);
+        }}
+        changeStatus(rid, 'tax_biz2', out.join(','));
+    }};
+    window.settlementSalesBizCommit = function(rid, el) {{
+        var wrap = el.closest('.sales-biz-checks');
+        if (!wrap) return;
+        var order = ['홍진', '에스엠', '스퀘어'];
+        var raw = wrap.getAttribute('data-pay-to-raw') || '';
+        try {{ raw = raw.replace(/&quot;/g, '"'); }} catch (e) {{}}
+        var parts = raw.split(/[,，]/).map(function(s) {{ return s.trim(); }}).filter(Boolean);
+        var rest = parts.filter(function(p) {{ return order.indexOf(p) < 0; }});
+        var selected = [];
+        for (var i = 0; i < order.length; i++) {{
+            var cb = wrap.querySelector('input[data-sb2-tag="' + order[i] + '"]');
+            if (cb && cb.checked) selected.push(order[i]);
+        }}
+        var val = rest.concat(selected).join(',');
+        changeStatus(rid, 'pay_to', val);
     }};
     window.toggleSettlementPay = function(id) {{
         fetch('/api/toggle_settlement_pay', {{ method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{ id: id }}) }})
@@ -3051,8 +3382,16 @@ def export_settlement_excel():
     q_in_name = _arg_str('q_in_name')
     q_phone = _arg_str('q_phone')
     q_vendor = _arg_str('vendor')
-    q_tax_biz2 = _arg_str('q_tax_biz2')   # 매입사업자 구분 검색
-    q_biz_issue = _arg_str('q_biz_issue') # 매출사업자 구분 검색
+    q_tax_biz2 = _arg_str('q_tax_biz2')   # 매입사업자 구분 레거시 검색
+    q_tb2_hj = _arg_str('tb2_hj')
+    q_tb2_sm = _arg_str('tb2_sm')
+    q_tb2_sq = _arg_str('tb2_sq')
+    q_tb2_tags = _tax_biz2_tags_from_args(q_tb2_hj, q_tb2_sm, q_tb2_sq)
+    q_biz_issue = _arg_str('q_biz_issue') # 매출사업자 구분 레거시 검색
+    q_sb2_hj = _arg_str('sb2_hj')
+    q_sb2_sm = _arg_str('sb2_sm')
+    q_sb2_sq = _arg_str('sb2_sq')
+    q_sb2_tags = _tax_biz2_tags_from_args(q_sb2_hj, q_sb2_sm, q_sb2_sq)
     q_start = _arg_str('start')
     q_end = _arg_str('end')
     q_filter_pay_client = _arg_str('filter_pay_client')   # ''=전체, 1=현금확인, 0=발행
@@ -3064,6 +3403,10 @@ def export_settlement_excel():
 
     q_order_start = _arg_str('order_start')
     q_order_end = _arg_str('order_end')
+    q_in_dt_start = _arg_str('in_dt_start')
+    q_in_dt_end = _arg_str('in_dt_end')
+    q_out_dt_start = _arg_str('out_dt_start')
+    q_out_dt_end = _arg_str('out_dt_end')
 
     def _chk_01(v):
         s = str(v or '').strip()
@@ -3085,6 +3428,18 @@ def export_settlement_excel():
     if q_order_end:
         conditions.append("order_dt <= ?")
         params.append(q_order_end)
+    if q_in_dt_start:
+        conditions.append("in_dt IS NOT NULL AND TRIM(COALESCE(in_dt,'')) != '' AND substr(in_dt,1,10) >= ?")
+        params.append(q_in_dt_start)
+    if q_in_dt_end:
+        conditions.append("in_dt IS NOT NULL AND TRIM(COALESCE(in_dt,'')) != '' AND substr(in_dt,1,10) <= ?")
+        params.append(q_in_dt_end)
+    if q_out_dt_start:
+        conditions.append("out_dt IS NOT NULL AND TRIM(COALESCE(out_dt,'')) != '' AND substr(out_dt,1,10) >= ?")
+        params.append(q_out_dt_start)
+    if q_out_dt_end:
+        conditions.append("out_dt IS NOT NULL AND TRIM(COALESCE(out_dt,'')) != '' AND substr(out_dt,1,10) <= ?")
+        params.append(q_out_dt_end)
     if q_name:
         name_part = q_name
         add_id_condition = False
@@ -3118,10 +3473,8 @@ def export_settlement_excel():
     if q_vendor:
         conditions.append("COALESCE(tax_biz_name,'') LIKE ?")
         params.append(f"%{q_vendor}%")
-    if q_tax_biz2:
-        conditions.append("COALESCE(tax_biz2,'') LIKE ?")
-        params.append(f"%{q_tax_biz2}%")
-    _append_ledger_q_biz_issue_sql(conditions, params, q_biz_issue)
+    _sql_append_tax_biz2(conditions, params, q_tb2_tags, '' if q_tb2_tags else q_tax_biz2)
+    _sql_append_biz_issue_tags(conditions, params, q_sb2_tags, '' if q_sb2_tags else q_biz_issue)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY CASE WHEN dispatch_dt IS NULL OR dispatch_dt = '' THEN 1 ELSE 0 END, dispatch_dt DESC, id DESC"
@@ -3157,6 +3510,10 @@ def export_settlement_excel():
         if q_order_start and order_dt < q_order_start:
             continue
         if q_order_end and order_dt > q_order_end:
+            continue
+        if not _ledger_yyyymmdd_in_range(in_dt, q_in_dt_start, q_in_dt_end):
+            continue
+        if not _ledger_yyyymmdd_in_range(out_dt, q_out_dt_start, q_out_dt_end):
             continue
 
         # 이름 필터 (매입처/매출처명·업체/기사명 + 오더고유번호 n01, n02 또는 숫자만 01, 12 등)
@@ -3342,6 +3699,12 @@ def statistics():
     q_out_end = request.args.get('out_end', '').strip()
     q_biz_issue = request.args.get('q_biz_issue', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     q_amount = request.args.get('q_amount', '').strip()
     q_in_name = request.args.get('q_in_name', '').strip()
     q_phone = request.args.get('q_phone', '').strip()
@@ -3380,9 +3743,9 @@ def statistics():
         if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
         if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
 
-        if not _row_matches_q_biz_issue(r, q_biz_issue):
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue):
             continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2):
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2):
             continue
 
         # 수금·지급 상태: 정산관리와 동일(_misu_status_for_settlement_row, _pay_status_from_row)
@@ -3615,6 +3978,26 @@ def statistics():
     q_phone_enc = quote(q_phone, safe='') if q_phone else ''
     q_biz_issue_enc = quote(q_biz_issue, safe='') if q_biz_issue else ''
     q_tax_biz2_enc = quote(q_tax_biz2, safe='') if q_tax_biz2 else ''
+    q_tb2_hj = (request.args.get('tb2_hj') or '').strip()
+    q_tb2_sm = (request.args.get('tb2_sm') or '').strip()
+    q_tb2_sq = (request.args.get('tb2_sq') or '').strip()
+    _tb2_qs_amp = ''
+    if q_tb2_hj == '1':
+        _tb2_qs_amp += '&amp;tb2_hj=1'
+    if q_tb2_sm == '1':
+        _tb2_qs_amp += '&amp;tb2_sm=1'
+    if q_tb2_sq == '1':
+        _tb2_qs_amp += '&amp;tb2_sq=1'
+    q_sb2_hj = (request.args.get('sb2_hj') or '').strip()
+    q_sb2_sm = (request.args.get('sb2_sm') or '').strip()
+    q_sb2_sq = (request.args.get('sb2_sq') or '').strip()
+    _sb2_qs_amp = ''
+    if q_sb2_hj == '1':
+        _sb2_qs_amp += '&amp;sb2_hj=1'
+    if q_sb2_sm == '1':
+        _sb2_qs_amp += '&amp;sb2_sm=1'
+    if q_sb2_sq == '1':
+        _sb2_qs_amp += '&amp;sb2_sq=1'
     q_c_num_enc = quote(q_c_num, safe='') if q_c_num else ''
     q_status_enc = quote(q_status, safe='') if q_status else ''
     q_month_client_enc = '&month_end_client=1' if q_month_client else ''
@@ -3680,7 +4063,7 @@ def statistics():
         <div class="client-settle-card" id="vendorSheetCard">
             <div class="client-settle-title">&lt;매입처 합산발행&gt;</div>
             <table class="client-settle-table">
-                <thead><tr><th>로그번호</th><th>매입처사업자명</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th>공급가액</th><th>부가세</th><th>합계</th><th>매출사업자구분(개인/법인)</th></tr></thead>
+                <thead><tr><th>로그번호</th><th>매입처사업자명</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th>지급운임</th><th>매입부가세</th><th>합계</th><th>매출사업자구분(개인/법인)</th></tr></thead>
                 <tbody></tbody>
                 <tfoot><tr class="client-sum-row"><td colspan="7">총합계액</td><td style="text-align:right; font-weight:bold;">0</td><td style="text-align:right; font-weight:bold;">0</td><td style="text-align:right; font-weight:bold;">0</td><td></td></tr></tfoot>
             </table>
@@ -3696,11 +4079,11 @@ def statistics():
         </div>"""
 
     if not df.empty:
-        # 매입처 합산발행: 통합장부 참조 — 매입처사업자명/오더일/배차일/기사명/차량번호/노선/공급가액/부가세/합계/매입사업자구분, 하단 총합계액 (배차일 오름차순)
+        # 매입처 합산발행: 통합장부 참조 — 매입처사업자명/오더일/배차일/기사명/차량번호/노선/지급운임/매입부가세/합계/매입사업자구분, 하단 총합계액 (배차일 오름차순)
         df_vendor = df.sort_values(by='dispatch_dt', ascending=True)
-        vendor_fee_sum = int(df_vendor['fee'].sum())
-        vendor_vat1_sum = int(df_vendor['vat1'].sum())
-        vendor_total1_sum = int(df_vendor['total1'].sum())
+        vendor_fee_sum = int(df_vendor['fee_out'].sum())
+        vendor_vat1_sum = int(df_vendor['vat2'].sum())
+        vendor_total1_sum = int(df_vendor['total2'].sum())
         rows_vendor = ""
         for _, r in df_vendor.iterrows():
             order_display = (r.get('order_dt') or '')[:10] if r.get('order_dt') else ''
@@ -3711,9 +4094,9 @@ def statistics():
             route_val = (r.get('route') or '')
             tax_biz_name = (r.get('tax_biz_name') or '')
             tax_biz_esc = tax_biz_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-            fee_val = int(r['fee'])
-            vat_val = int(r['vat1'])
-            total_val = int(r['total1'])
+            fee_val = int(r['fee_out'])
+            vat_val = int(r['vat2'])
+            total_val = int(r['total2'])
             tax_biz2_val = str(r.get('tax_biz2') or '').strip()
             log_no = str(r.get('id') or '').strip().replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
             rows_vendor += f"<tr><td>{log_no}</td><td>{tax_biz_esc}</td><td>{order_display}</td><td>{dispatch_display}</td><td>{d_name_esc}</td><td>{c_num_val}</td><td>{route_val}</td><td style='text-align:right;'>{fee_val:,}</td><td style='text-align:right;'>{vat_val:,}</td><td style='text-align:right;'>{total_val:,}</td><td>{tax_biz2_val}</td></tr>"
@@ -3724,7 +4107,7 @@ def statistics():
         <div class="client-settle-card" id="vendorSheetCard">
             <div class="client-settle-title">{vendor_heading}</div>
             <table class="client-settle-table">
-                <thead><tr><th>로그번호</th><th>매입처사업자명</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th>공급가액</th><th>부가세</th><th>합계</th><th>매입사업자구분</th></tr></thead>
+                <thead><tr><th>로그번호</th><th>매입처사업자명</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th>지급운임</th><th>매입부가세</th><th>합계</th><th>매입사업자구분</th></tr></thead>
                 <tbody>{rows_vendor}</tbody>
                 <tfoot><tr class="client-sum-row"><td colspan="7">총합계액</td><td style="text-align:right; font-weight:bold;">{vendor_fee_sum:,}</td><td style="text-align:right; font-weight:bold;">{vendor_vat1_sum:,}</td><td style="text-align:right; font-weight:bold;">{vendor_total1_sum:,}</td><td></td></tr></tfoot>
             </table>
@@ -3781,43 +4164,56 @@ def statistics():
         s = str(s).strip()
         return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
-    # 이체확인 테이블: 배차일 기준 내림차순(최신 먼저)
-    stats_transfer_table = ""
-    if not df.empty:
-        df_sorted = df.sort_values(by=['dispatch_dt', 'total1'], ascending=[False, True])
-        sum_total1 = int(df_sorted['total1'].sum())
-        sum_total2 = int(df_sorted['total2'].sum())
-        rows_html = ""
-        for _, r in df_sorted.iterrows():
-            total1_val = int(r.get('total1', 0))
-            total2_val = int(r.get('total2', 0))
-            order_dt = _esc(r.get('order_dt'))
-            dispatch_dt = _esc(r.get('dispatch_dt'))
-            d_name = _esc(r.get('d_name', ''))
-            c_num = _esc(r.get('c_num', ''))
-            d_phone = _esc(r.get('d_phone', ''))
-            route_s = _esc(r.get('route', ''))
-            client_name = _esc(r.get('client_name', ''))
-            in_name = _esc(r.get('in_name', ''))
-            client_memo = _esc(r.get('client_memo', ''))
-            rows_html += f"<tr class=\"data-row\" data-order-dt=\"{order_dt}\" data-dispatch-dt=\"{dispatch_dt}\" data-total1=\"{total1_val}\" data-total2=\"{total2_val}\" data-d-name=\"{d_name}\" data-c-num=\"{c_num}\" data-route=\"{route_s}\"><td>{order_dt}</td><td>{dispatch_dt}</td><td>{d_name}</td><td>{c_num}</td><td>{d_phone}</td><td>{route_s}</td><td style='text-align:right;'>{total1_val:,}</td><td>{client_name}</td><td style='text-align:right;'>{total2_val:,}</td><td>{in_name}</td><td style='text-align:left; max-width:120px;'>{client_memo}</td></tr>"
-        stats_transfer_table = f"""
+    # 미수확인(신규): 수금일 없음(in_dt 비어 있음) · 상단 조회 조건과 동일 · 업체운임합계=매출합계(total1)
+    misu_uncollected = [r for r in filtered_rows if not str(r.get('in_dt') or '').strip()]
+
+    def _misu_confirm_sort_key(x):
+        d = (x.get('dispatch_dt') or '')[:10] if x.get('dispatch_dt') else ''
+        if not d:
+            d = '9999-99-99'
+        try:
+            lid = int(str(x.get('id') or '0').strip())
+        except (TypeError, ValueError):
+            lid = 0
+        return (d, lid)
+
+    misu_uncollected.sort(key=_misu_confirm_sort_key)
+    rows_misu_confirm = ""
+    sum_misu_confirm_t1 = 0
+    for r in misu_uncollected:
+        t1 = int(r.get('total1') or 0)
+        sum_misu_confirm_t1 += t1
+        log_no = _esc(r.get('id'))
+        order_dt = _esc((r.get('order_dt') or '')[:10])
+        dispatch_d = _esc((r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else '')
+        d_name = _esc(r.get('d_name', ''))
+        c_num = _esc(r.get('c_num', ''))
+        d_phone = _esc(r.get('d_phone', ''))
+        route_s = _esc(r.get('route', ''))
+        client_name = _esc(r.get('client_name', ''))
+        c_mgr_phone = _esc(r.get('c_mgr_phone', ''))
+        in_name = _esc(r.get('in_name', ''))
+        month_val = _esc(r.get('month_val', ''))
+        rows_misu_confirm += (
+            f"<tr><td>{log_no}</td><td>{order_dt}</td><td>{dispatch_d}</td><td>{d_name}</td><td>{c_num}</td><td>{d_phone}</td><td>{route_s}</td>"
+            f"<td style='text-align:right;'>{t1:,}</td><td>{client_name}</td>"
+            f"<td>{c_mgr_phone}</td><td>{in_name}</td><td>{month_val}</td></tr>"
+        )
+    _n_misu_c = len(misu_uncollected)
+    stats_misu_confirm_section = f"""
         <div class="section" style="margin-top:20px;">
-            <h3>💳 이체확인 (총 {stats_total_count}개)</h3>
-            <div style="margin-bottom:10px;"><a href="/api/statistics_transfer_excel?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}" class="btn-status bg-green" style="text-decoration:none; cursor:pointer;">📥 엑셀 다운로드</a></div>
+            <h3>📌 미수확인 <span style="font-size:0.9em; color:#555;">(신규 · 총 {_n_misu_c:,}건)</span></h3>
+            <p style="margin:0 0 10px 0; font-size:13px; color:#64748b;">상단 <strong>상태 및 조회</strong>와 동일한 필터가 적용됩니다. <strong>수금일</strong>(<code>in_dt</code>)이 비어 있는 건만 표시합니다. 업체운임합계는 <strong>매출 합계</strong>(total1)입니다. 연락처는 기사 연락처(<code>d_phone</code>)입니다.</p>
             <div class="table-scroll stats-transfer-scroll">
-            <table class="client-settle-table" id="statsTransferTable">
-                <thead><tr><th data-sort="order-dt" style="cursor:pointer;" title="클릭 시 오름/내림차순">오더일 ↕</th><th data-sort="dispatch-dt" style="cursor:pointer;" title="클릭 시 오름/내림차순">배차일 ↕</th><th data-sort="d-name" style="cursor:pointer;">기사명 ↕</th><th>차량번호</th><th>연락처</th><th data-sort="route" style="cursor:pointer;" title="클릭 시 오름/내림차순">노선 ↕</th><th data-sort="total1" style="cursor:pointer;" title="클릭 시 오름/내림차순">업체운임합계 ↕</th><th>업체명</th><th data-sort="total2" style="cursor:pointer;" title="클릭 시 오름/내림차순">기사운임합계 ↕</th><th>매출처 입금자명</th><th>결제비고</th></tr></thead>
-                <tbody>{rows_html}</tbody>
-                <tfoot><tr class="client-sum-row"><td colspan="6">총합계</td><td style="text-align:right;">{sum_total1:,}</td><td></td><td style="text-align:right;">{sum_total2:,}</td><td></td><td></td></tr></tfoot>
+            <table class="client-settle-table" id="statsMisuConfirmTable">
+                <thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>연락처</th><th>노선</th><th style="text-align:right;">업체운임합계</th><th>업체명</th><th>매출결제담당 연락처</th><th>매출처 입금자명</th><th>수금관련비고</th></tr></thead>
+                <tbody>{rows_misu_confirm}</tbody>
+                <tfoot><tr class="client-sum-row"><td colspan="7">합계</td><td style="text-align:right; font-weight:bold;">{sum_misu_confirm_t1:,}</td><td colspan="4"></td></tr></tfoot>
             </table>
             </div>
-            <p style="margin:10px 0 0 0; font-size:12px; color:#64748b;">📐 수식: 업체운임합계 = 매출 합계(공급가액+매출 부가세), 기사운임합계 = 매입 합계(지급운임+매입 부가세). 검색기준일=배차일.</p>
         </div>"""
-    else:
-        stats_transfer_table = ""
 
-    # 수금완료 이체확인(신규): 오더일/배차일/기사명/차량번호/연락처/노선/매출합계/업체명/결제담당자/실입금액/매출사업자구분
+    # 수금완료 이체확인: 로그번호·오더일·배차일·기사명·차량번호·연락처·노선·매출합계·업체명·매출처 입금자명·결제담당자·실입금액·매출사업자구분
     stats_done_in_table = ""
     stats_done_out_table = ""
     if not df.empty:
@@ -3839,11 +4235,12 @@ def statistics():
                 d_phone = _esc(r.get('d_phone', ''))
                 route_s = _esc(r.get('route', ''))
                 client_name = _esc(r.get('client_name', ''))
+                in_name_done = _esc(r.get('in_name', ''))
                 c_mgr_name = _esc(r.get('c_mgr_name', ''))
                 pay_to = _esc(r.get('pay_to', ''))
                 rows_done += (
                     f"<tr><td>{log_no}</td><td>{order_dt}</td><td>{dispatch_dt}</td><td>{d_name}</td><td>{c_num}</td><td>{d_phone}</td><td>{route_s}</td>"
-                    f"<td style='text-align:right;'>{total1_val:,}</td><td>{client_name}</td>"
+                    f"<td style='text-align:right;'>{total1_val:,}</td><td>{client_name}</td><td>{in_name_done}</td>"
                     f"<td>{c_mgr_name}</td><td style='text-align:right;'>{real_in_amt_val:,}</td><td>{pay_to}</td></tr>"
                 )
             stats_done_in_table = f"""
@@ -3851,14 +4248,14 @@ def statistics():
             <h3>✅ 수금완료 이체확인 (신규 · 총 {len(df_done_sorted)}개)</h3>
             <div class="table-scroll stats-transfer-scroll">
             <table class="client-settle-table" id="statsDoneInTable">
-                <thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>연락처</th><th>노선</th><th>매출합계</th><th>업체명</th><th>결제담당자</th><th>실입금액</th><th>매출사업자구분</th></tr></thead>
+                <thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>연락처</th><th>노선</th><th>매출합계</th><th>업체명</th><th>매출처 입금자명</th><th>결제담당자</th><th>실입금액</th><th>매출사업자구분</th></tr></thead>
                 <tbody>{rows_done}</tbody>
-                <tfoot><tr class="client-sum-row"><td colspan="7">총합계</td><td style="text-align:right;">{sum_done_total1:,}</td><td></td><td></td><td style="text-align:right;">{sum_done_real_in:,}</td><td></td></tr></tfoot>
+                <tfoot><tr class="client-sum-row"><td colspan="7">총합계</td><td style="text-align:right;">{sum_done_total1:,}</td><td></td><td></td><td></td><td style="text-align:right;">{sum_done_real_in:,}</td><td></td></tr></tfoot>
             </table>
             </div>
         </div>"""
 
-        # 지급완료(out_dt 존재)
+        # 지급완료 이체확인: 로그번호·오더일·배차일·기사명·차량번호·연락처·노선·매입합계·매입처사업자명·결제담당자·매입처 예금주(d_bank_owner)·실출금액·매입사업자구분
         df_out = df[df['out_dt'].notna() & (df['out_dt'].astype(str).str.strip() != "")]
         if not df_out.empty:
             df_out_sorted = df_out.sort_values(by=['dispatch_dt', 'total2'], ascending=[False, True])
@@ -3877,24 +4274,25 @@ def statistics():
                 route_s = _esc(r.get('route', ''))
                 tax_biz_name = _esc(r.get('tax_biz_name', ''))
                 c_mgr_name = _esc(r.get('c_mgr_name', ''))
+                d_bank_owner_s = _esc(r.get('d_bank_owner', ''))
                 tax_biz2 = _esc(r.get('tax_biz2', ''))
                 rows_out += (
                     f"<tr><td>{log_no}</td><td>{order_dt}</td><td>{dispatch_dt}</td><td>{d_name}</td><td>{c_num}</td><td>{d_phone}</td><td>{route_s}</td>"
                     f"<td style='text-align:right;'>{total2_val:,}</td><td>{tax_biz_name}</td>"
-                    f"<td>{c_mgr_name}</td><td style='text-align:right;'>{real_out_amt_val:,}</td><td>{tax_biz2}</td></tr>"
+                    f"<td>{c_mgr_name}</td><td>{d_bank_owner_s}</td><td style='text-align:right;'>{real_out_amt_val:,}</td><td>{tax_biz2}</td></tr>"
                 )
             stats_done_out_table = f"""
         <div class="section" style="margin-top:20px;">
             <h3>✅ 지급완료 이체확인 (신규 · 총 {len(df_out_sorted)}개)</h3>
             <div class="table-scroll stats-transfer-scroll">
             <table class="client-settle-table" id="statsDoneOutTable">
-                <thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>연락처</th><th>노선</th><th>매입합계</th><th>매입처사업자명</th><th>결제담당자</th><th>실출금액</th><th>매입사업자구분</th></tr></thead>
+                <thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>연락처</th><th>노선</th><th>매입합계</th><th>매입처사업자명</th><th>결제담당자</th><th>매입처 예금주</th><th>실출금액</th><th>매입사업자구분</th></tr></thead>
                 <tbody>{rows_out}</tbody>
-                <tfoot><tr class="client-sum-row"><td colspan="7">총합계</td><td style="text-align:right;">{sum_out_total2:,}</td><td></td><td></td><td style="text-align:right;">{sum_out_real_out:,}</td><td></td></tr></tfoot>
+                <tfoot><tr class="client-sum-row"><td colspan="7">총합계</td><td style="text-align:right;">{sum_out_total2:,}</td><td></td><td></td><td></td><td style="text-align:right;">{sum_out_real_out:,}</td><td></td></tr></tfoot>
             </table>
             </div>
         </div>"""
-    # 고정기사 운행내역서: 오더일/배차일/기사명/차량번호/노선/기사운임/부가세/합계/매입사업자구분/지급일/매입사업자명/매출사업자구분/수금일/매출사업자명/지급통장/지급관련비고
+    # 고정기사 운행내역서 표시 열(왼쪽부터): 기사명·차량번호·노선·기사운임·부가세·합계·매입사업자구분·지급일·매입사업자명·매출사업자구분·수금일·매출사업자명·매출처 입금자명·지급통장·지급관련비고 (정렬·검색용으로 오더일/배차일/로그는 data 속성에만 유지)
     driver_biz_rows_html = ""
     driver_biz_list = []
     if not df.empty:
@@ -3917,6 +4315,7 @@ def statistics():
             tax_ok = '있음' if tax_img_val else '미확인'
             pay_memo_val = _ledger_driver_pay_memo_str(r)
             biz_issue_raw = str(r.get('biz_issue') or '').strip()
+            in_name_val = str(r.get('in_name') or '').strip()
             driver_biz_list.append({
                 '로그번호': str(r.get('id') or '').strip(),
                 '오더일': order_dt_val,
@@ -3934,6 +4333,7 @@ def statistics():
                 'biz_issue_raw': biz_issue_raw,
                 '수금일': in_dt_val,
                 '매출사업자명': client_name_val,
+                '매출처 입금자명': in_name_val,
                 '지급통장': pay_bank_val,
                 '매입계산서구분': tax_ok,
                 '지급관련비고': pay_memo_val,
@@ -3958,32 +4358,33 @@ def statistics():
             biz_search_attr = ' '.join(x for x in (b.get('매출사업자구분') or '', b.get('biz_issue_raw') or '') if x).strip()
             driver_biz_rows_html += (
                 f"<tr class=\"biz-row\" data-order-dt=\"{_besc(b['오더일'])}\" data-dispatch-dt=\"{_besc(b['배차일'])}\" "
+                f"data-log-id=\"{_besc(b['로그번호'])}\" data-in-name=\"{_besc(b.get('매출처 입금자명') or '')}\" "
                 f"data-d-name=\"{_besc(b['기사명'])}\" data-c-num=\"{_besc(b['차량번호'])}\" data-route=\"{_besc(b['노선'])}\" "
                 f"data-biz-issue=\"{_besc(biz_search_attr)}\" data-tax-biz2=\"{_besc(b.get('매입사업자구분') or '')}\" data-driver-pay-memo=\"{_besc(b.get('지급관련비고') or '')}\" data-client-name=\"{_besc(b['매출사업자명'])}\" data-tax-biz-name=\"{_besc(b['매입사업자명'])}\">"
-                f"<td>{_besc(b['로그번호'])}</td><td>{_besc(b['오더일'])}</td><td>{dispatch_display}</td><td>{_besc(b['기사명'])}</td><td>{_besc(b['차량번호'])}</td>"
+                f"<td>{_besc(b['기사명'])}</td><td>{_besc(b['차량번호'])}</td>"
                 f"<td>{_besc(b['노선'])}</td><td style='text-align:right;'>{b['기사운임']:,}</td>"
                 f"<td style='text-align:right;'>{b['부가세']:,}</td><td style='text-align:right;'>{b['합계']:,}</td>"
                 f"<td>{_besc(b['매입사업자구분'])}</td><td>{_besc(b['지급일'])}</td><td>{_besc(b['매입사업자명'])}</td>"
-                f"<td>{_besc(b['매출사업자구분'])}</td><td>{_besc(b['수금일'])}</td><td>{_besc(b['매출사업자명'])}</td><td>{_besc(b['지급통장'])}</td>"
+                f"<td>{_besc(b['매출사업자구분'])}</td><td>{_besc(b['수금일'])}</td><td>{_besc(b['매출사업자명'])}</td><td>{_besc(b.get('매출처 입금자명') or '')}</td><td>{_besc(b['지급통장'])}</td>"
                 f"<td class=\"biz-memo-cell\"><div class=\"biz-memo-inner\">{_besc(b['지급관련비고'])}</div></td></tr>"
             )
     biz_table_count = len(driver_biz_list)
     biz_sum_운임 = sum(b['기사운임'] for b in driver_biz_list)
     biz_sum_부가세 = sum(b['부가세'] for b in driver_biz_list)
     biz_sum_합계 = sum(b['합계'] for b in driver_biz_list)
-    biz_tfoot_html = f"<tfoot><tr class=\"client-sum-row\"><td colspan=\"6\">총합계액</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_운임:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_부가세:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_합계:,}</td><td colspan=\"8\"></td></tr></tfoot>"
+    biz_tfoot_html = f"<tfoot><tr class=\"client-sum-row\"><td colspan=\"3\">총합계액</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_운임:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_부가세:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_합계:,}</td><td colspan=\"9\"></td></tr></tfoot>"
     stats_biz_section = f"""
         <div class="section" style="margin-top:28px;">
             <h3>📋 고정기사 운행내역서 <span style="font-size:0.9em; color:#555;">(총 {biz_table_count}건)</span></h3>
             <div style="margin-bottom:10px; display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
                 <input type="text" id="bizTableSearch" placeholder="오더일, 배차일, 기사명, 차량번호, 노선, 매출처, 매입처 등 검색" style="width:320px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" >
                 <button type="button" id="bizTableSearchBtn" class="btn-save" onclick="filterBizTable();">검색</button>
-                <a href="/api/statistics_biz_settlement_excel?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
+                <a href="/api/statistics_biz_settlement_excel?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}{_tb2_qs_amp}{_sb2_qs_amp}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
                 <button type="button" onclick="captureBizSettle()" class="btn-status bg-orange">🖼️ 정산서 양식 이미지 저장</button>
             </div>
             <div class="table-scroll stats-transfer-scroll" id="bizSettleZone">
             <table class="client-settle-table" id="statsBizTable">
-                <thead><tr><th>로그번호</th><th data-sort="order-dt" style="cursor:pointer;">오더일 ↕</th><th data-sort="dispatch-dt" style="cursor:pointer;">배차일 ↕</th><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임(지급운임)</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>매입사업자구분</th><th>지급일</th><th>매입사업자명</th><th>매출사업자구분</th><th>수금일</th><th>매출사업자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead>
+                <thead><tr><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임(지급운임)</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>매입사업자구분</th><th>지급일</th><th>매입사업자명</th><th>매출사업자구분</th><th>수금일</th><th>매출사업자명</th><th>매출처 입금자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead>
                 <tbody>{driver_biz_rows_html}</tbody>
                 {biz_tfoot_html}
             </table>
@@ -3995,7 +4396,7 @@ def statistics():
         <div class="section" style="margin-top:28px;">
             <h3>📋 고정기사 운행내역서 <span style="font-size:0.9em; color:#555;">(총 0건)</span></h3>
             <div style="margin-bottom:10px; display:flex; flex-wrap:wrap; gap:10px; align-items:center;"><input type="text" id="bizTableSearch" placeholder="오더일, 배차일, 기사명, 차량번호, 노선, 매입/매출사업자명 등 검색" style="width:320px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" disabled><button type="button" id="bizTableSearchBtn" class="btn-save" disabled>검색</button></div>
-            <div class="table-scroll stats-transfer-scroll" id="bizSettleZone"><table class="client-settle-table" id="statsBizTable"><thead><tr><th>로그번호</th><th>오더일 ↕</th><th>배차일 ↕</th><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임(지급운임)</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>매입사업자구분</th><th>지급일</th><th>매입사업자명</th><th>매출사업자구분</th><th>수금일</th><th>매출사업자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead><tbody></tbody></table></div>
+            <div class="table-scroll stats-transfer-scroll" id="bizSettleZone"><table class="client-settle-table" id="statsBizTable"><thead><tr><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임(지급운임)</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>매입사업자구분</th><th>지급일</th><th>매입사업자명</th><th>매출사업자구분</th><th>수금일</th><th>매출사업자명</th><th>매출처 입금자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead><tbody></tbody></table></div>
             <p style="margin:10px 0 0 0; font-size:12px; color:#64748b;">📐 수식: 기사운임(지급운임)=통합장부 기사운임, 부가세=기사운임×10%(매입처 현금확인 시 0), 합계=기사운임+부가세 · 지급관련비고=통합장부 지급관련비고와 동일(driver_pay_memo)</p>
         </div>"""
 
@@ -4101,9 +4502,13 @@ def statistics():
                     <strong style="margin-left:8px;">📞 전화번호</strong>
                     <input type="text" name="q_phone" value="{q_phone}" placeholder="전화번호" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
                     <strong style="margin-left:8px;">🏷 매출사업자구분</strong>
-                    <input type="text" name="q_biz_issue" value="{q_biz_issue}" placeholder="매출사업자구분" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
+                    <label style="margin-left:4px; white-space:nowrap;"><input type="checkbox" name="sb2_hj" value="1" {"checked" if (request.args.get('sb2_hj') or '').strip() == "1" else ""}> 홍진</label>
+                    <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sm" value="1" {"checked" if (request.args.get('sb2_sm') or '').strip() == "1" else ""}> 에스엠</label>
+                    <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sq" value="1" {"checked" if (request.args.get('sb2_sq') or '').strip() == "1" else ""}> 스퀘어</label>
                     <strong style="margin-left:8px;">📎 매입사업자구분</strong>
-                    <input type="text" name="q_tax_biz2" value="{q_tax_biz2}" placeholder="매입사업자구분" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
+                    <label style="margin-left:4px; white-space:nowrap;"><input type="checkbox" name="tb2_hj" value="1" {"checked" if (request.args.get('tb2_hj') or '').strip() == "1" else ""}> 홍진</label>
+                    <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sm" value="1" {"checked" if (request.args.get('tb2_sm') or '').strip() == "1" else ""}> 에스엠</label>
+                    <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sq" value="1" {"checked" if (request.args.get('tb2_sq') or '').strip() == "1" else ""}> 스퀘어</label>
                 </div>
                 <div class="row" style="margin-top:10px;">
                     <strong>업체현금</strong>
@@ -4181,7 +4586,7 @@ def statistics():
 
         {stats_daily_misu_pay_section}
 
-        {stats_transfer_table}
+        {stats_misu_confirm_section}
 
         {stats_done_in_table}
 
@@ -4194,24 +4599,24 @@ def statistics():
                 <button type="button" class="tab-btn stats-sheet-tab" data-tab="sheetVendor" onclick="openStatsSheetTab(event, 'sheetVendor')">매입처 합산발행</button>
                 <button type="button" class="tab-btn stats-sheet-tab" data-tab="sheetFixedDriver" onclick="openStatsSheetTab(event, 'sheetFixedDriver')">고정기사 합산발행</button>
             </div>
-            <p style="margin:0 0 12px 0; font-size:12px; color:#64748b;">📐 탭별 수식 — <strong>매출처 합산발행</strong>: 공급가액=수수료+선착불+업체운임, 부가세=공급가액×10%(매출처 현금이면 0), 합계=공급가액+부가세 · <strong>매입처 합산발행</strong>: 동일(매출 쪽 공급가액/부가세/합계 기준) · <strong>고정기사 합산발행</strong>: 지급운임=기사운임, 매입부가세=지급운임×10%(매입처 현금이면 0), 합계=지급운임+매입부가세</p>
+            <p style="margin:0 0 12px 0; font-size:12px; color:#64748b;">📐 탭별 수식 — <strong>매출처 합산발행</strong>: 공급가액=수수료+선착불+업체운임, 부가세=공급가액×10%(매출처 현금이면 0), 합계=공급가액+부가세 · <strong>매입처 합산발행</strong>: 지급운임=기사운임, 매입부가세=지급운임×10%(매입처 현금이면 0), 합계=지급운임+매입부가세 · <strong>고정기사 합산발행</strong>: 지급운임=기사운임, 매입부가세=지급운임×10%(매입처 현금이면 0), 합계=지급운임+매입부가세</p>
             <div id="sheetClient" class="stats-sheet-content" style="display:block;">
                 <div style="display:flex; justify-content:flex-end; margin-bottom:10px; gap:8px;">
-                    <a href="/export_settlement_sheet?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
+                    <a href="/export_settlement_sheet?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}{_tb2_qs_amp}{_sb2_qs_amp}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
                     <button type="button" onclick="captureSettle('settleSheetZone')" class="btn-status bg-orange">🖼️ 이미지 저장</button>
                 </div>
                 <div class="table-scroll" id="raw_settle_sheet"><div class="client-settle-sections">{settlement_sheet_html}</div><div class="settle-footer-msg">에스엠 로지텍 발신</div></div>
             </div>
             <div id="sheetVendor" class="stats-sheet-content" style="display:none;">
                 <div style="display:flex; justify-content:flex-end; margin-bottom:10px; gap:8px;">
-                    <a href="/export_vendor_sheet?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
+                    <a href="/export_vendor_sheet?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}{_tb2_qs_amp}{_sb2_qs_amp}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
                     <button type="button" onclick="captureSettle('vendorSheetZone')" class="btn-status bg-orange">🖼️ 이미지 저장</button>
                 </div>
                 <div class="table-scroll" id="raw_vendor_sheet"><div class="client-settle-sections">{vendor_sheet_html}</div><div class="settle-footer-msg">에스엠 로지텍 발신</div></div>
             </div>
             <div id="sheetFixedDriver" class="stats-sheet-content" style="display:none;">
                 <div style="display:flex; justify-content:flex-end; margin-bottom:10px; gap:8px;">
-                    <a href="/export_fixed_driver_sheet?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
+                    <a href="/export_fixed_driver_sheet?start={q_start}&amp;end={q_end}&amp;order_start={q_order_start}&amp;order_end={q_order_end}&amp;client={q_client_enc}&amp;vendor={q_vendor_enc}&amp;driver={q_driver_enc}&amp;c_num={q_c_num_enc}&amp;q_amount={q_amount_enc}&amp;q_in_name={q_in_name_enc}&amp;q_phone={q_phone_enc}&amp;q_biz_issue={q_biz_issue_enc}&amp;q_tax_biz2={q_tax_biz2_enc}&amp;status={q_status_enc}&amp;month_end_client={q_month_client or ''}&amp;month_end_driver={q_month_driver or ''}&amp;not_month_end_client={q_not_month_end_client or ''}&amp;not_month_end_driver={q_not_month_end_driver or ''}&amp;filter_pay_client={q_filter_pay_client or ''}&amp;filter_pay_driver={q_filter_pay_driver or ''}&amp;in_start={q_in_start}&amp;in_end={q_in_end}&amp;out_start={q_out_start}&amp;out_end={q_out_end}{_tb2_qs_amp}{_sb2_qs_amp}" class="btn-status bg-green" style="text-decoration:none;">📥 엑셀 다운로드</a>
                     <button type="button" onclick="captureSettle('fixedDriverSheetZone')" class="btn-status bg-orange">🖼️ 이미지 저장</button>
                 </div>
                 <div class="table-scroll" id="raw_fixed_driver_sheet"><div class="client-settle-sections">{fixed_driver_sheet_html}</div><div class="settle-footer-msg">에스엠 로지텍 발신</div></div>
@@ -4238,42 +4643,6 @@ def statistics():
             for (var j = 0; j < btns.length; j++) {{ btns[j].classList.toggle("active", btns[j].getAttribute("data-tab") === tabId); }}
             if (e && e.currentTarget) e.currentTarget.classList.add("active");
         }}
-        (function() {{
-            var tbl = document.getElementById("statsTransferTable");
-            if (!tbl) return;
-            var sortCol = null;
-            var sortAsc = true;
-            function sortTable(colKey) {{
-                var tbody = tbl.querySelector("tbody");
-                if (!tbody) return;
-                var dataRows = [].slice.call(tbody.querySelectorAll("tr.data-row"));
-                var summaryRows = [].slice.call(tbody.querySelectorAll("tr.summary-row"));
-                dataRows.sort(function(a, b) {{
-                    var va = a.getAttribute(colKey) || "";
-                    var vb = b.getAttribute(colKey) || "";
-                    if (colKey === "data-total1" || colKey === "data-total2") {{
-                        var na = parseFloat(va) || 0;
-                        var nb = parseFloat(vb) || 0;
-                        return sortAsc ? na - nb : nb - na;
-                    }}
-                    if (va < vb) return sortAsc ? -1 : 1;
-                    if (va > vb) return sortAsc ? 1 : -1;
-                    return 0;
-                }});
-                dataRows.forEach(function(tr) {{ tbody.appendChild(tr); }});
-                summaryRows.forEach(function(tr) {{ tbody.appendChild(tr); }});
-            }}
-            tbl.querySelectorAll("thead th[data-sort]").forEach(function(th) {{
-                th.addEventListener("click", function() {{
-                    var key = th.getAttribute("data-sort") || "";
-                    var colKey = "data-" + key;
-                    if (sortCol === colKey) sortAsc = !sortAsc;
-                    else {{ sortCol = colKey; sortAsc = true; }}
-                    sortTable(colKey);
-                }});
-            }});
-        }})();
-
         function filterBizTable() {{
             var bizSearch = document.getElementById("bizTableSearch");
             var bizTable = document.getElementById("statsBizTable");
@@ -4282,7 +4651,7 @@ def statistics():
             var rows = bizTable.querySelectorAll("tbody tr.biz-row");
             for (var i = 0; i < rows.length; i++) {{
                 var tr = rows[i];
-                var text = (tr.getAttribute("data-order-dt") || "") + " " + (tr.getAttribute("data-dispatch-dt") || "") + " " + (tr.getAttribute("data-d-name") || "") + " " + (tr.getAttribute("data-c-num") || "") + " " + (tr.getAttribute("data-route") || "") + " " + (tr.getAttribute("data-biz-issue") || "") + " " + (tr.getAttribute("data-tax-biz2") || "") + " " + (tr.getAttribute("data-driver-pay-memo") || "") + " " + (tr.getAttribute("data-client-name") || "") + " " + (tr.getAttribute("data-tax-biz-name") || "") + " " + (tr.textContent || "");
+                var text = (tr.getAttribute("data-order-dt") || "") + " " + (tr.getAttribute("data-dispatch-dt") || "") + " " + (tr.getAttribute("data-log-id") || "") + " " + (tr.getAttribute("data-in-name") || "") + " " + (tr.getAttribute("data-d-name") || "") + " " + (tr.getAttribute("data-c-num") || "") + " " + (tr.getAttribute("data-route") || "") + " " + (tr.getAttribute("data-biz-issue") || "") + " " + (tr.getAttribute("data-tax-biz2") || "") + " " + (tr.getAttribute("data-driver-pay-memo") || "") + " " + (tr.getAttribute("data-client-name") || "") + " " + (tr.getAttribute("data-tax-biz-name") || "") + " " + (tr.textContent || "");
                 tr.style.display = q === "" || text.toLowerCase().indexOf(q) !== -1 ? "" : "none";
             }}
         }}
@@ -4344,7 +4713,7 @@ def statistics():
                     if (cand[fi].style.display !== 'none') {{ firstRow = cand[fi]; break; }}
                 }}
             }}
-            var topName = firstRow ? (firstRow.getAttribute('data-d-name') || (firstRow.cells[3] && firstRow.cells[3].textContent ? firstRow.cells[3].textContent.trim() : '')) : '';
+            var topName = firstRow ? (firstRow.getAttribute('data-d-name') || (firstRow.cells[0] && firstRow.cells[0].textContent ? firstRow.cells[0].textContent.trim() : '')) : '';
             var baseName = _sanitizeFileName(topName) || '고정기사운행내역서';
             var clone = targetEl.cloneNode(true);
             clone.style.overflow = 'visible';
@@ -4357,10 +4726,10 @@ def statistics():
                 var btr = bizRows[bi];
                 if (btr.style.display === 'none') {{ btr.remove(); continue; }}
                 var btd = btr.querySelectorAll('td');
-                if (btd.length > 8) {{
-                    sumW += parseInt(String((btd[6].textContent || '')).replace(/,/g, ''), 10) || 0;
-                    sumV += parseInt(String((btd[7].textContent || '')).replace(/,/g, ''), 10) || 0;
-                    sumT += parseInt(String((btd[8].textContent || '')).replace(/,/g, ''), 10) || 0;
+                if (btd.length > 5) {{
+                    sumW += parseInt(String((btd[3].textContent || '')).replace(/,/g, ''), 10) || 0;
+                    sumV += parseInt(String((btd[4].textContent || '')).replace(/,/g, ''), 10) || 0;
+                    sumT += parseInt(String((btd[5].textContent || '')).replace(/,/g, ''), 10) || 0;
                 }}
             }}
             var bizFootTr = clone.querySelector('table#statsBizTable tfoot tr') || clone.querySelector('table tfoot tr');
@@ -4438,49 +4807,28 @@ def statistics():
                     <div style="margin-bottom:30px; overflow:visible; max-height:none;">${{bodyHtml}}</div>
                 </div>
             `;
+            /* 매출·매입·고정기사 합산발행: 화면과 동일하게 공급가액/부가세/합계(또는 지급운임/매입부가세/합계) 열을 유지 — 예전에는 이미지용으로 열을 줄였음 */
             if (isSettleSheet) {{
                 var sTable = printContent.querySelector('table.client-settle-table') || printContent.querySelector('table');
                 if (sTable) {{
-                    var headRow = sTable.querySelector('thead tr');
-                    if (headRow) {{
-                        var headers = Array.prototype.slice.call(headRow.querySelectorAll('th')).map(function(th) {{
-                            return (th.textContent || '').trim();
-                        }});
-                        var wanted = ['매출처명', '오더일', '배차일', '기사명', '차량번호', '노선', '합계'];
-                        var idxs = wanted.map(function(label) {{ return headers.indexOf(label); }});
-                        if (idxs.every(function(i) {{ return i >= 0; }})) {{
-                            headRow.innerHTML = '<th>매출처명</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th>매출합계</th>';
-                            var bodyRows = sTable.querySelectorAll('tbody tr');
-                            for (var bi = 0; bi < bodyRows.length; bi++) {{
-                                var tr = bodyRows[bi];
-                                var tds = tr.querySelectorAll('td');
-                                var newHtml = '';
-                                for (var wi = 0; wi < idxs.length; wi++) {{
-                                    var cell = tds[idxs[wi]];
-                                    newHtml += '<td' + (cell && cell.getAttribute('style') ? ' style="' + cell.getAttribute('style') + '"' : '') + '>' + (cell ? cell.innerHTML : '') + '</td>';
-                                }}
-                                tr.innerHTML = newHtml;
+                    var headTr = sTable.querySelector('thead tr');
+                    if (headTr) {{
+                        var thList = headTr.querySelectorAll('th');
+                        var dropIdx = -1;
+                        for (var hi = 0; hi < thList.length; hi++) {{
+                            if (((thList[hi].textContent || '').indexOf('매출사업자구분')) !== -1) {{ dropIdx = hi; break; }}
+                        }}
+                        if (dropIdx >= 0) {{
+                            var allTr = sTable.querySelectorAll('tr');
+                            for (var ri = 0; ri < allTr.length; ri++) {{
+                                if (allTr[ri].cells.length > dropIdx) allTr[ri].deleteCell(dropIdx);
                             }}
-                            var oldTf = sTable.querySelector('tfoot');
-                            var sumHtml = '0';
-                            if (oldTf) {{
-                                var ftTds = oldTf.querySelectorAll('tr td');
-                                if (ftTds.length >= 4) sumHtml = ftTds[3].innerHTML;
-                                oldTf.remove();
-                            }}
-                            var nf = document.createElement('tfoot');
-                            nf.innerHTML = '<tr class="client-sum-row"><td colspan="6" style="font-weight:bold;border-top:2px solid #34d399;padding:12px 14px;">합계금액</td><td style="text-align:right;font-weight:bold;border-top:2px solid #34d399;padding:12px 14px;">' + sumHtml + '</td></tr>';
-                            sTable.appendChild(nf);
                         }}
                     }}
                     var salesRow = sTable.querySelector('tbody tr');
                     var salesClientName = '';
-                    if (salesRow && salesRow.cells && salesRow.cells.length) {{
-                        if (salesRow.cells.length <= 7) {{
-                            salesClientName = (salesRow.cells[0] && salesRow.cells[0].textContent) ? salesRow.cells[0].textContent.trim() : '';
-                        }} else {{
-                            salesClientName = (salesRow.cells[1] && salesRow.cells[1].textContent) ? salesRow.cells[1].textContent.trim() : '';
-                        }}
+                    if (salesRow && salesRow.cells && salesRow.cells.length >= 2) {{
+                        salesClientName = (salesRow.cells[1].textContent || '').trim();
                     }}
                     var titleEl = printContent.querySelector('.client-settle-title');
                     if (titleEl) {{
@@ -4491,43 +4839,26 @@ def statistics():
             if (isVendorSheet) {{
                 var vTable = printContent.querySelector('table.client-settle-table') || printContent.querySelector('table');
                 if (vTable) {{
-                    var vHeadRow = vTable.querySelector('thead tr');
-                    if (vHeadRow) {{
-                        var vHeaders = Array.prototype.slice.call(vHeadRow.querySelectorAll('th')).map(function(th) {{
-                            return (th.textContent || '').trim();
-                        }});
-                        var vWanted = ['매입처사업자명', '오더일', '배차일', '기사명', '차량번호', '노선', '합계'];
-                        var vIdxs = vWanted.map(function(label) {{ return vHeaders.indexOf(label); }});
-                        if (vIdxs.every(function(i) {{ return i >= 0; }})) {{
-                            vHeadRow.innerHTML = '<th>매입처사업자명</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th>매입합계</th>';
-                            var vBodyRows = vTable.querySelectorAll('tbody tr');
-                            for (var vi = 0; vi < vBodyRows.length; vi++) {{
-                                var vTr = vBodyRows[vi];
-                                var vTds = vTr.querySelectorAll('td');
-                                var vNewHtml = '';
-                                for (var vj = 0; vj < vIdxs.length; vj++) {{
-                                    var vCell = vTds[vIdxs[vj]];
-                                    vNewHtml += '<td' + (vCell && vCell.getAttribute('style') ? ' style="' + vCell.getAttribute('style') + '"' : '') + '>' + (vCell ? vCell.innerHTML : '') + '</td>';
-                                }}
-                                vTr.innerHTML = vNewHtml;
+                    var vHeadTr = vTable.querySelector('thead tr');
+                    if (vHeadTr) {{
+                        var vThList = vHeadTr.querySelectorAll('th');
+                        var vDropIdx = -1;
+                        for (var vhi = 0; vhi < vThList.length; vhi++) {{
+                            var vht = (vThList[vhi].textContent || '').trim();
+                            if (vht.indexOf('매입사업자구분') !== -1 || vht.indexOf('매입발행사업자구분') !== -1) {{ vDropIdx = vhi; break; }}
+                        }}
+                        if (vDropIdx >= 0) {{
+                            var vAllTr = vTable.querySelectorAll('tr');
+                            for (var vri = 0; vri < vAllTr.length; vri++) {{
+                                if (vAllTr[vri].cells.length > vDropIdx) vAllTr[vri].deleteCell(vDropIdx);
                             }}
-                            var vOldTf = vTable.querySelector('tfoot');
-                            var vSumHtml = '0';
-                            if (vOldTf) {{
-                                var vFtTds = vOldTf.querySelectorAll('tr td');
-                                if (vFtTds.length >= 4) vSumHtml = vFtTds[3].innerHTML;
-                                vOldTf.remove();
-                            }}
-                            var vNf = document.createElement('tfoot');
-                            vNf.innerHTML = '<tr class="client-sum-row"><td colspan="6" style="font-weight:bold;border-top:2px solid #34d399;padding:12px 14px;">합계금액</td><td style="text-align:right;font-weight:bold;border-top:2px solid #34d399;padding:12px 14px;">' + vSumHtml + '</td></tr>';
-                            vTable.appendChild(vNf);
                         }}
                     }}
-                    var vendorNameCell = vTable.querySelector('tbody tr td:nth-child(1)');
+                    var vendorNameCell = vTable.querySelector('tbody tr td:nth-child(2)');
                     var vendorNameForTitle = (vendorNameCell && vendorNameCell.textContent ? vendorNameCell.textContent.trim() : '');
                     var vTitleEl = printContent.querySelector('.client-settle-title');
                     if (vTitleEl) {{
-                        vTitleEl.textContent = (vendorNameForTitle || '매입처사업자명') + '정산서';
+                        vTitleEl.textContent = (vendorNameForTitle || '매입처사업자명') + ' 정산서';
                     }}
                 }}
             }}
@@ -4535,51 +4866,25 @@ def statistics():
                 var fCard = printContent.querySelector('#fixedDriverSheetCard');
                 var fTable = fCard ? fCard.querySelector('table.client-settle-table') : (printContent.querySelector('table.client-settle-table') || printContent.querySelector('table'));
                 if (fTable) {{
-                    var fHeadRow = fTable.querySelector('thead tr');
-                    if (fHeadRow) {{
-                        var fHeaders = Array.prototype.slice.call(fHeadRow.querySelectorAll('th')).map(function(th) {{
-                            return (th.textContent || '').trim();
-                        }});
-                        var idxDriver = fHeaders.indexOf('기사명');
-                        var idxOrder = fHeaders.indexOf('오더일');
-                        var idxDispatch = fHeaders.indexOf('배차일');
-                        var idxCar = fHeaders.indexOf('차량번호');
-                        var idxRoute = fHeaders.indexOf('노선');
-                        var idxTotal = fHeaders.indexOf('합계');
-                        if (idxDriver >= 0 && idxOrder >= 0 && idxDispatch >= 0 && idxCar >= 0 && idxRoute >= 0 && idxTotal >= 0) {{
-                            var fIdxs = [idxDriver, idxOrder, idxDispatch, idxCar, idxRoute, idxTotal];
-                            fHeadRow.innerHTML = '<th>기사명</th><th>오더일</th><th>배차일</th><th>차량번호</th><th>노선</th><th>매입합계</th>';
-                            var fBodyRows = fTable.querySelectorAll('tbody tr');
-                            for (var fi = 0; fi < fBodyRows.length; fi++) {{
-                                var fTr = fBodyRows[fi];
-                                var fTds = fTr.querySelectorAll('td');
-                                var fNewHtml = '';
-                                for (var fj = 0; fj < fIdxs.length; fj++) {{
-                                    var fCell = fTds[fIdxs[fj]];
-                                    fNewHtml += '<td' + (fCell && fCell.getAttribute('style') ? ' style="' + fCell.getAttribute('style') + '"' : '') + '>' + (fCell ? fCell.innerHTML : '') + '</td>';
-                                }}
-                                fTr.innerHTML = fNewHtml;
+                    var fHeadTr = fTable.querySelector('thead tr');
+                    if (fHeadTr) {{
+                        var fThList = fHeadTr.querySelectorAll('th');
+                        var fDropIdx = -1;
+                        for (var fhi = 0; fhi < fThList.length; fhi++) {{
+                            var fht = (fThList[fhi].textContent || '').trim();
+                            if (fht.indexOf('매입사업자구분') !== -1 || fht.indexOf('매입발행사업자구분') !== -1) {{ fDropIdx = fhi; break; }}
+                        }}
+                        if (fDropIdx >= 0) {{
+                            var fAllTr = fTable.querySelectorAll('tr');
+                            for (var fri = 0; fri < fAllTr.length; fri++) {{
+                                if (fAllTr[fri].cells.length > fDropIdx) fAllTr[fri].deleteCell(fDropIdx);
                             }}
-                            var fOldTf = fTable.querySelector('tfoot');
-                            var fSumHtml = '0';
-                            if (fOldTf) {{
-                                var fFtTds = fOldTf.querySelectorAll('tr td');
-                                if (fFtTds.length >= 4) fSumHtml = fFtTds[3].innerHTML;
-                                fOldTf.remove();
-                            }}
-                            var fNf = document.createElement('tfoot');
-                            fNf.innerHTML = '<tr class="client-sum-row"><td colspan="5" style="font-weight:bold;border-top:2px solid #34d399;padding:12px 14px;">합계금액</td><td style="text-align:right;font-weight:bold;border-top:2px solid #34d399;padding:12px 14px;">' + fSumHtml + '</td></tr>';
-                            fTable.appendChild(fNf);
                         }}
                     }}
                     var fixedRow = fTable.querySelector('tbody tr');
                     var fixedDriverName = '';
-                    if (fixedRow && fixedRow.cells && fixedRow.cells.length) {{
-                        if (fixedRow.cells.length <= 6) {{
-                            fixedDriverName = (fixedRow.cells[0] && fixedRow.cells[0].textContent) ? fixedRow.cells[0].textContent.trim() : '';
-                        }} else {{
-                            fixedDriverName = (fixedRow.cells[2] && fixedRow.cells[2].textContent) ? fixedRow.cells[2].textContent.trim() : '';
-                        }}
+                    if (fixedRow && fixedRow.cells && fixedRow.cells.length >= 3) {{
+                        fixedDriverName = (fixedRow.cells[2].textContent || '').trim();
                     }}
                     var fixedTitleBar = fCard ? fCard.querySelector('.client-settle-title') : printContent.querySelector('#fixedDriverSheetCard .client-settle-title');
                     var fixedTitleText = fixedDriverName ? ('<' + fixedDriverName + ' 정산서>') : '<고정기사 합산발행>';
@@ -4594,21 +4899,19 @@ def statistics():
             if (isSettleSheet && table) {{
                 var trTop = table.querySelector('tbody tr');
                 if (trTop && trTop.cells && trTop.cells.length >= 2) {{
-                    if (trTop.cells.length <= 7) {{
-                        topName = (trTop.cells[0].textContent || '').trim();
-                    }} else {{
-                        topName = (trTop.cells[1].textContent || '').trim();
-                    }}
+                    topName = (trTop.cells[1].textContent || '').trim();
+                }}
+            }}
+            if (isVendorSheet && table) {{
+                var trVen = table.querySelector('tbody tr');
+                if (trVen && trVen.cells && trVen.cells.length >= 2) {{
+                    topName = (trVen.cells[1].textContent || '').trim();
                 }}
             }}
             if (isFixedDriverSheet && table) {{
                 var trFix = table.querySelector('tbody tr');
-                if (trFix && trFix.cells && trFix.cells.length) {{
-                    if (trFix.cells.length <= 6) {{
-                        topName = (trFix.cells[0].textContent || '').trim();
-                    }} else if (trFix.cells.length >= 3) {{
-                        topName = (trFix.cells[2].textContent || '').trim();
-                    }}
+                if (trFix && trFix.cells && trFix.cells.length >= 3) {{
+                    topName = (trFix.cells[2].textContent || '').trim();
                 }}
             }}
             var baseName = _sanitizeFileName(topName);
@@ -4643,136 +4946,10 @@ def statistics():
         resp.set_cookie('stats_end', q_end, max_age=365*24*60*60)
     return resp
 
-@app.route('/api/statistics_transfer_excel')
-@login_required
-def statistics_transfer_excel():
-    """통계분석 이체확인 테이블과 동일 조건으로 엑셀 다운로드 (기본 검색기준일=배차일, 오더일 추가검색)"""
-    q_start = request.args.get('start', '').strip()
-    q_end = request.args.get('end', '').strip()
-    q_order_start = request.args.get('order_start', '').strip()
-    q_order_end = request.args.get('order_end', '').strip()
-    q_client = request.args.get('client', '').strip()
-    q_vendor = request.args.get('vendor', '').strip()
-    q_driver = request.args.get('driver', '').strip()
-    q_c_num = request.args.get('c_num', '').strip()
-    q_status = request.args.get('status', '')
-    q_month_client = request.args.get('month_end_client', '')
-    q_month_driver = request.args.get('month_end_driver', '')
-    q_not_month_end_client = request.args.get('not_month_end_client', '').strip()
-    q_not_month_end_driver = request.args.get('not_month_end_driver', '').strip()
-    q_filter_pay_client = request.args.get('filter_pay_client', '').strip()
-    q_filter_pay_driver = request.args.get('filter_pay_driver', '').strip()
-    q_in_start = request.args.get('in_start', '').strip()
-    q_in_end = request.args.get('in_end', '').strip()
-    q_out_start = request.args.get('out_start', '').strip()
-    q_out_end = request.args.get('out_end', '').strip()
-    q_amount = request.args.get('q_amount', '').strip()
-    q_in_name = request.args.get('q_in_name', '').strip()
-    q_phone = request.args.get('q_phone', '').strip()
-    q_biz_issue = request.args.get('q_biz_issue', '').strip()
-    q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
-    conn = connect_ledger()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM ledger").fetchall()
-    conn.close()
-    fixed_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '고정'}
-    hyup_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '협력사'}
-    gae_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '개별'}
-    fixed_c_nums.discard(''); hyup_c_nums.discard(''); gae_c_nums.discard('')
-    today_naive = now_kst().replace(tzinfo=None)
-    filtered = []
-    for row in rows:
-        r = dict(row)
-        order_dt = (r.get('order_dt') or '')[:10]
-        dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
-        if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
-            continue
-        if not _order_in_settlement_range(order_dt, q_order_start, q_order_end):
-            continue
-        if q_client and q_client not in str(r.get('client_name', '')):
-            continue
-        if q_vendor and q_vendor not in str(r.get('tax_biz_name', '')):
-            continue
-        if q_driver and q_driver not in str(r.get('d_name', '')):
-            continue
-        if q_c_num and q_c_num not in str(r.get('c_num', '')):
-            continue
-        if q_month_client and (str(r.get('month_end_client') or '').strip() not in ('1', 'Y')):
-            continue
-        if q_month_driver and (str(r.get('month_end_driver') or '').strip() not in ('1', 'Y')):
-            continue
-        if q_not_month_end_client and (str(r.get('month_end_client') or '').strip() in ('1', 'Y')): continue
-        if q_not_month_end_driver and (str(r.get('month_end_driver') or '').strip() in ('1', 'Y')): continue
-        if q_filter_pay_client == '1' and (str(r.get('pay_method_client') or '').strip() != '현금'): continue
-        if q_filter_pay_client == '0' and (str(r.get('pay_method_client') or '').strip() == '현금'): continue
-        if q_filter_pay_driver == '1' and (str(r.get('pay_method_driver') or '').strip() != '현금'): continue
-        if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
-        if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2): continue
-        in_dt = r.get('in_dt')
-        out_dt = r.get('out_dt')
-        if q_in_start or q_in_end:
-            in_dt_val = (in_dt or '')[:10] if in_dt else ''
-            if not in_dt_val: continue
-            if q_in_start and in_dt_val < q_in_start: continue
-            if q_in_end and in_dt_val > q_in_end: continue
-        if q_out_start or q_out_end:
-            out_dt_val = (out_dt or '')[:10] if out_dt else ''
-            if not out_dt_val: continue
-            if q_out_start and out_dt_val < q_out_start: continue
-            if q_out_end and out_dt_val > q_out_end: continue
-        m_st = "수금완료" if in_dt else ("조건부미수" if not r.get('pre_post') and not r.get('pay_due_dt') else "미수")
-        p_st = _pay_status_from_row(r)
-        c_num = str(r.get('c_num', '')).strip()
-        d_type = "직영" if c_num in fixed_c_nums else "일반"
-        if q_status:
-            if q_status == "misu_all" and m_st not in ("미수", "조건부미수"): continue
-            if q_status == "pay_all" and p_st not in ("미지급", "조건부미지급"): continue
-            if q_status in ["미수", "조건부미수", "수금완료"] and q_status != m_st:
-                continue
-            if q_status in ["미지급", "조건부미지급", "지급완료"] and q_status != p_st:
-                continue
-            if q_status == "고정" and c_num not in fixed_c_nums:
-                continue
-            if q_status == "협력사" and c_num not in hyup_c_nums:
-                continue
-            if q_status == "개별" and c_num not in gae_c_nums:
-                continue
-            if q_status in ["직영", "일반"] and q_status != d_type:
-                continue
-        fee, vat1, total1, fee_out, vat2, total2 = calc_totals_with_vat(r)
-        filtered.append({
-            '로그번호': r.get('id', ''),
-            '오더일': (r.get('order_dt') or '')[:10],
-            '배차일': (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else '',
-            '기사명': r.get('d_name', ''),
-            '차량번호': r.get('c_num', ''),
-            '연락처': r.get('d_phone', ''),
-            '노선': r.get('route', ''),
-            '업체운임합계': total1,
-            '업체명': r.get('client_name', ''),
-            '기사운임합계': total2,
-            '매출처 입금자명': r.get('in_name', ''),
-            '결제비고': r.get('client_memo', ''),
-        })
-    df = pd.DataFrame(filtered)
-    if not df.empty:
-        # 통계 화면 이체확인 표와 동일: 배차일 내림차순, 업체운임합계 오름차순
-        df = df.sort_values(by=['배차일', '업체운임합계'], ascending=[False, True], na_position='last')
-    if df.empty:
-        df = pd.DataFrame(columns=['로그번호', '오더일', '배차일', '기사명', '차량번호', '연락처', '노선', '업체운임합계', '업체명', '기사운임합계', '매출처 입금자명', '결제비고'])
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine='openpyxl') as w:
-        df.to_excel(w, index=False, sheet_name='이체확인')
-    out.seek(0)
-    fname = f"이체확인_{now_kst().strftime('%Y%m%d_%H%M')}.xlsx"
-    return send_file(out, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=fname)
-
 @app.route('/api/statistics_biz_settlement_excel')
 @login_required
 def statistics_biz_settlement_excel():
-    """통계 고정기사 운행내역서 엑셀: 통계 화면 테이블과 동일 컬럼·순서(로그번호~지급관련비고) + 하단 총합계액."""
+    """통계 고정기사 운행내역서 엑셀: 화면 테이블과 동일 컬럼·순서(기사명~지급관련비고) + 하단 총합계액."""
     q_start = request.args.get('start', '').strip()
     q_end = request.args.get('end', '').strip()
     q_client = request.args.get('client', '').strip()
@@ -4797,6 +4974,12 @@ def statistics_biz_settlement_excel():
     q_phone = request.args.get('q_phone', '').strip()
     q_biz_issue = request.args.get('q_biz_issue', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     fixed_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '고정'}
     hyup_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '협력사'}
     gae_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '개별'}
@@ -4833,8 +5016,8 @@ def statistics_biz_settlement_excel():
         if q_filter_pay_driver == '1' and (str(r.get('pay_method_driver') or '').strip() != '현금'): continue
         if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
         if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2): continue
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
         in_dt = r.get('in_dt')
         out_dt = r.get('out_dt')
         if q_in_start or q_in_end:
@@ -4870,9 +5053,8 @@ def statistics_biz_settlement_excel():
         dispatch_dt = str(r.get('dispatch_dt', '') or '')[:19] if r.get('dispatch_dt') else ''
         pay_memo_val = _ledger_driver_pay_memo_str(r)
         filtered.append({
-            '로그번호': r.get('id', ''),
-            '오더일': (order_dt or '')[:10] if order_dt else '',
-            '배차일': dispatch_dt[:10] if dispatch_dt else '',
+            '_sort_dispatch': dispatch_dt[:10] if dispatch_dt else '',
+            '_sort_id': r.get('id', ''),
             '기사명': str(r.get('d_name', '') or '').strip(),
             '차량번호': str(r.get('c_num', '') or '').strip(),
             '노선': str(r.get('route', '') or '').strip(),
@@ -4885,34 +5067,32 @@ def statistics_biz_settlement_excel():
             '매출사업자구분': str(r.get('pay_to') or '').strip(),
             '수금일': (in_dt or '')[:10] if in_dt else '',
             '매출사업자명': str(r.get('client_name') or '').strip(),
+            '매출처 입금자명': str(r.get('in_name') or '').strip(),
             '지급통장': str(r.get('pay_bank') or '').strip(),
             '지급관련비고': pay_memo_val,
         })
     excel_cols = [
-        '로그번호', '오더일', '배차일', '기사명', '차량번호', '노선',
+        '기사명', '차량번호', '노선',
         '기사운임(지급운임)', '부가세', '합계', '매입사업자구분', '지급일', '매입사업자명',
-        '매출사업자구분', '수금일', '매출사업자명', '지급통장', '지급관련비고',
+        '매출사업자구분', '수금일', '매출사업자명', '매출처 입금자명', '지급통장', '지급관련비고',
     ]
     # 통계 화면 고정기사 운행내역서와 동일: 배차일 오름차순(빈값 맨 뒤), 동일일자는 로그번호 오름차순
     def _biz_excel_sort_key(x):
-        d = (x.get('배차일') or '').strip()
+        d = (x.get('_sort_dispatch') or '').strip()
         if not d:
             d = '9999-99-99'
         try:
-            lid = int(str(x.get('로그번호') or '0').strip())
+            lid = int(str(x.get('_sort_id') or '0').strip())
         except (TypeError, ValueError):
             lid = 0
         return (d, lid)
     filtered.sort(key=_biz_excel_sort_key)
-    df = pd.DataFrame(filtered, columns=excel_cols)
+    df = pd.DataFrame([{k: r.get(k) for k in excel_cols} for r in filtered], columns=excel_cols)
     if not df.empty:
         sum_fee = int(pd.to_numeric(df['기사운임(지급운임)'], errors='coerce').fillna(0).sum())
         sum_vat = int(pd.to_numeric(df['부가세'], errors='coerce').fillna(0).sum())
         sum_total = int(pd.to_numeric(df['합계'], errors='coerce').fillna(0).sum())
         df.loc[len(df)] = {
-            '로그번호': '',
-            '오더일': '',
-            '배차일': '',
             '기사명': '',
             '차량번호': '',
             '노선': '총합계액',
@@ -4925,6 +5105,7 @@ def statistics_biz_settlement_excel():
             '매출사업자구분': '',
             '수금일': '',
             '매출사업자명': '',
+            '매출처 입금자명': '',
             '지급통장': '',
             '지급관련비고': '',
         }
@@ -5051,6 +5232,12 @@ def export_settlement_sheet():
     q_out_end = request.args.get('out_end', '').strip()
     q_biz_issue = request.args.get('q_biz_issue', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     conn = connect_ledger()
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger ORDER BY CASE WHEN dispatch_dt IS NULL OR dispatch_dt = '' THEN 1 ELSE 0 END, dispatch_dt DESC, id DESC").fetchall()
@@ -5125,8 +5312,8 @@ def export_settlement_sheet():
             if not out_dt_val: continue
             if q_out_start and out_dt_val < q_out_start: continue
             if q_out_end and out_dt_val > q_out_end: continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2): continue
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
         fee, vat1, total1, _, _, _ = calc_totals_with_vat(r)
         filtered.append({
             'id': r.get('id', ''),
@@ -5174,6 +5361,12 @@ def export_vendor_sheet():
     q_out_end = request.args.get('out_end', '').strip()
     q_biz_issue = request.args.get('q_biz_issue', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     conn = connect_ledger()
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger ORDER BY CASE WHEN dispatch_dt IS NULL OR dispatch_dt = '' THEN 1 ELSE 0 END, dispatch_dt DESC, id DESC").fetchall()
@@ -5248,8 +5441,8 @@ def export_vendor_sheet():
             if not out_dt_val: continue
             if q_out_start and out_dt_val < q_out_start: continue
             if q_out_end and out_dt_val > q_out_end: continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2): continue
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
         fee, vat1, total1, fee_out, vat2, total2 = calc_totals_with_vat(r)
         filtered.append({
             'id': r.get('id', ''),
@@ -5294,6 +5487,12 @@ def export_fixed_driver_sheet():
     q_out_end = request.args.get('out_end', '').strip()
     q_biz_issue = request.args.get('q_biz_issue', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     fixed_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '고정'}
     hyup_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '협력사'}
     gae_c_nums = {str(d.get('차량번호', '')).strip() for d in drivers_db if str(d.get('개인/고정', '')).strip() == '개별'}
@@ -5367,8 +5566,8 @@ def export_fixed_driver_sheet():
             if not out_dt_val: continue
             if q_out_start and out_dt_val < q_out_start: continue
             if q_out_end and out_dt_val > q_out_end: continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2): continue
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
         _, _, _, fee_out, vat2, total2 = calc_totals_with_vat(r)
         d_type = "고정"
         if c_num in gae_c_nums:
@@ -5425,8 +5624,18 @@ def export_misu_info():
     q_c_num = request.args.get('c_num', '').strip()
     q_start = request.args.get('start', '').strip(); q_end = request.args.get('end', '').strip()
     q_order_start = request.args.get('order_start', '').strip(); q_order_end = request.args.get('order_end', '').strip()
+    q_in_dt_start = request.args.get('in_dt_start', '').strip()
+    q_in_dt_end = request.args.get('in_dt_end', '').strip()
+    q_out_dt_start = request.args.get('out_dt_start', '').strip()
+    q_out_dt_end = request.args.get('out_dt_end', '').strip()
     q_vendor = request.args.get('vendor', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip(); q_biz_issue = request.args.get('q_biz_issue', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     q_amount = request.args.get('q_amount', '').strip(); q_client = request.args.get('q_client', '').strip()
     q_in_name = request.args.get('q_in_name', '').strip(); q_phone = request.args.get('q_phone', '').strip()
     q_mc = str(request.args.get('month_end_client') or '').strip()
@@ -5448,14 +5657,18 @@ def export_misu_info():
             continue
         if not _order_in_settlement_range(order_dt, q_order_start, q_order_end):
             continue
+        if not _ledger_yyyymmdd_in_range(row_dict.get('in_dt'), q_in_dt_start, q_in_dt_end):
+            continue
+        if not _ledger_yyyymmdd_in_range(row_dict.get('out_dt'), q_out_dt_start, q_out_dt_end):
+            continue
         if q_vendor and q_vendor.lower() not in str(row_dict.get('tax_biz_name') or '').lower(): continue
-        if q_tax_biz2 and q_tax_biz2 not in str(row_dict.get('tax_biz2') or ''): continue
+        if not _row_matches_tax_biz2_combined(row_dict, q_tb2_tags, q_tax_biz2): continue
         if q_c_num and q_c_num.lower() not in str(row_dict.get('c_num') or '').lower(): continue
         if q_filter_pay_client == '1' and (str(row_dict.get('pay_method_client') or '').strip() != '현금'): continue
         if q_filter_pay_client == '0' and (str(row_dict.get('pay_method_client') or '').strip() == '현금'): continue
         if q_filter_pay_driver == '1' and (str(row_dict.get('pay_method_driver') or '').strip() != '현금'): continue
         if q_filter_pay_driver == '0' and (str(row_dict.get('pay_method_driver') or '').strip() == '현금'): continue
-        if not _row_matches_q_biz_issue(row_dict, q_biz_issue): continue
+        if not _row_matches_biz_issue_combined(row_dict, q_sb2_tags, q_biz_issue): continue
         if not _row_matches_extra_filters(row_dict, q_amount, q_client, q_in_name, q_phone): continue
         if not _row_matches_month_end_ledger_filters(row_dict, q_mc, q_md, q_nmc, q_nmd): continue
         in_dt = row_dict.get('in_dt')
@@ -5511,8 +5724,18 @@ def export_tax_not_issued():
     q_c_num = request.args.get('c_num', '').strip()
     q_start = request.args.get('start', '').strip(); q_end = request.args.get('end', '').strip()
     q_order_start = request.args.get('order_start', '').strip(); q_order_end = request.args.get('order_end', '').strip()
+    q_in_dt_start = request.args.get('in_dt_start', '').strip()
+    q_in_dt_end = request.args.get('in_dt_end', '').strip()
+    q_out_dt_start = request.args.get('out_dt_start', '').strip()
+    q_out_dt_end = request.args.get('out_dt_end', '').strip()
     q_vendor = request.args.get('vendor', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip(); q_biz_issue = request.args.get('q_biz_issue', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     q_amount = request.args.get('q_amount', '').strip(); q_client = request.args.get('q_client', '').strip()
     q_in_name = request.args.get('q_in_name', '').strip(); q_phone = request.args.get('q_phone', '').strip()
     q_mc = str(request.args.get('month_end_client') or '').strip()
@@ -5542,14 +5765,18 @@ def export_tax_not_issued():
             continue
         if not _order_in_settlement_range(order_dt, q_order_start, q_order_end):
             continue
+        if not _ledger_yyyymmdd_in_range(r.get('in_dt'), q_in_dt_start, q_in_dt_end):
+            continue
+        if not _ledger_yyyymmdd_in_range(r.get('out_dt'), q_out_dt_start, q_out_dt_end):
+            continue
         if q_vendor and q_vendor.lower() not in str(r.get('tax_biz_name') or '').lower(): continue
-        if q_tax_biz2 and q_tax_biz2 not in str(r.get('tax_biz2') or ''): continue
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
         if q_c_num and q_c_num.lower() not in str(r.get('c_num') or '').lower(): continue
         if q_filter_pay_client == '1' and (str(r.get('pay_method_client') or '').strip() != '현금'): continue
         if q_filter_pay_client == '0' and (str(r.get('pay_method_client') or '').strip() == '현금'): continue
         if q_filter_pay_driver == '1' and (str(r.get('pay_method_driver') or '').strip() != '현금'): continue
         if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
         if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
         if not _row_matches_month_end_ledger_filters(r, q_mc, q_md, q_nmc, q_nmd): continue
         if q_name:
@@ -5661,8 +5888,18 @@ def export_pay_info():
     q_c_num = request.args.get('c_num', '').strip()
     q_start = request.args.get('start', '').strip(); q_end = request.args.get('end', '').strip()
     q_order_start = request.args.get('order_start', '').strip(); q_order_end = request.args.get('order_end', '').strip()
+    q_in_dt_start = request.args.get('in_dt_start', '').strip()
+    q_in_dt_end = request.args.get('in_dt_end', '').strip()
+    q_out_dt_start = request.args.get('out_dt_start', '').strip()
+    q_out_dt_end = request.args.get('out_dt_end', '').strip()
     q_vendor = request.args.get('vendor', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip(); q_biz_issue = request.args.get('q_biz_issue', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     q_amount = request.args.get('q_amount', '').strip(); q_client = request.args.get('q_client', '').strip()
     q_in_name = request.args.get('q_in_name', '').strip(); q_phone = request.args.get('q_phone', '').strip()
     q_mc = str(request.args.get('month_end_client') or '').strip()
@@ -5698,14 +5935,18 @@ def export_pay_info():
             continue
         if not _order_in_settlement_range(order_dt, q_order_start, q_order_end):
             continue
+        if not _ledger_yyyymmdd_in_range(row_dict.get('in_dt'), q_in_dt_start, q_in_dt_end):
+            continue
+        if not _ledger_yyyymmdd_in_range(row_dict.get('out_dt'), q_out_dt_start, q_out_dt_end):
+            continue
         if q_vendor and q_vendor.lower() not in str(row_dict.get('tax_biz_name') or '').lower(): continue
-        if q_tax_biz2 and q_tax_biz2 not in str(row_dict.get('tax_biz2') or ''): continue
+        if not _row_matches_tax_biz2_combined(row_dict, q_tb2_tags, q_tax_biz2): continue
         if q_c_num and q_c_num.lower() not in str(row_dict.get('c_num') or '').lower(): continue
         if q_filter_pay_client == '1' and (str(row_dict.get('pay_method_client') or '').strip() != '현금'): continue
         if q_filter_pay_client == '0' and (str(row_dict.get('pay_method_client') or '').strip() == '현금'): continue
         if q_filter_pay_driver == '1' and (str(row_dict.get('pay_method_driver') or '').strip() != '현금'): continue
         if q_filter_pay_driver == '0' and (str(row_dict.get('pay_method_driver') or '').strip() == '현금'): continue
-        if not _row_matches_q_biz_issue(row_dict, q_biz_issue): continue
+        if not _row_matches_biz_issue_combined(row_dict, q_sb2_tags, q_biz_issue): continue
         if not _row_matches_extra_filters(row_dict, q_amount, q_client, q_in_name, q_phone): continue
         if not _row_matches_month_end_ledger_filters(row_dict, q_mc, q_md, q_nmc, q_nmd): continue
         in_dt = row_dict.get('in_dt')
@@ -5799,6 +6040,12 @@ def export_stats():
     st = request.args.get('status', '')
     q_biz_issue = request.args.get('q_biz_issue', '').strip()
     q_tax_biz2 = request.args.get('q_tax_biz2', '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     month_client = request.args.get('month_end_client', '')
     month_driver = request.args.get('month_end_driver', '')
     in_start = request.args.get('in_start', '').strip()
@@ -5841,8 +6088,8 @@ def export_stats():
         if v and v not in str(r.get('tax_biz_name', '')): continue
         if d and d not in str(r['d_name']): continue
         if c_num_param and c_num_param not in str(r.get('c_num', '')): continue
-        if not _row_matches_q_biz_issue(r, q_biz_issue): continue
-        if not _row_matches_q_tax_biz2(r, q_tax_biz2): continue
+        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
+        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
         if month_client and (str(r.get('month_end_client') or '').strip() not in ('1', 'Y')): continue
         if month_driver and (str(r.get('month_end_driver') or '').strip() not in ('1', 'Y')): continue
         if st:
@@ -6176,10 +6423,16 @@ def get_ledger():
     q_amount = (request.args.get('q_amount') or '').strip()
     q_client = (request.args.get('q_client') or '').strip()
     q_tax_biz2 = (request.args.get('q_tax_biz2') or '').strip()
+    q_tb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
+    )
+    q_sb2_tags = _tax_biz2_tags_from_args(
+        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
+    )
     q_biz_issue = (request.args.get('q_biz_issue') or '').strip()
     q_in_name = (request.args.get('q_in_name') or '').strip()
     q_phone = (request.args.get('q_phone') or '').strip()
-    has_extra = bool(q_amount or q_client or q_in_name or q_phone or q_tax_biz2 or q_biz_issue)
+    has_extra = bool(q_amount or q_client or q_in_name or q_phone or q_tax_biz2 or q_biz_issue or q_tb2_tags or q_sb2_tags)
     
     conn = connect_ledger(); conn.row_factory = sqlite3.Row
     
@@ -6225,10 +6478,8 @@ def get_ledger():
         conditions.append(" (issue_dt IS NOT NULL AND trim(issue_dt) != '')")
     elif filter_tax_driver == '0':
         conditions.append(" (issue_dt IS NULL OR trim(issue_dt) = '')")
-    if q_tax_biz2:
-        conditions.append(" COALESCE(tax_biz2,'') LIKE ?")
-        params.append(f"%{q_tax_biz2}%")
-    _append_ledger_q_biz_issue_sql(conditions, params, q_biz_issue, leading=" ")
+    _sql_append_tax_biz2(conditions, params, q_tb2_tags, '' if q_tb2_tags else q_tax_biz2)
+    _sql_append_biz_issue_tags(conditions, params, q_sb2_tags, q_biz_issue)
     base_where = " WHERE " + " AND ".join(conditions) if conditions else ""
     start_idx = (page - 1) * per_page
 
@@ -7842,6 +8093,239 @@ def api_update_driver(driver_id):
 @app.route("/download-all")
 def download_all():
     return send_file("backup.tar.gz", as_attachment=True)
+
+
+def _count_admins():
+    conn = connect_ledger()
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM app_users WHERE is_admin = 1").fetchone()[0] or 0)
+    finally:
+        conn.close()
+
+
+@app.route('/admin')
+@login_required
+@admin_required
+def admin_users_page():
+    _uid = session.get('user_id')
+    _myid_js = 'null' if _uid is None else str(int(_uid))
+    content = """
+    <div class="section">
+        <h2>⚙ 계정·권한 관리</h2>
+        <p style="margin:0 0 12px 0; font-size:13px; color:#64748b;">
+            <strong>보기(view)</strong>: 화면 조회만 가능 · <strong>편집(edit)</strong>: 장부·정산·기사·업체 등 데이터 등록·수정·삭제 가능.
+            <strong>관리자</strong>는 이 메뉴에서 계정을 추가·수정·삭제할 수 있습니다.
+        </p>
+        <div id="adminUsersErr" style="color:#c53030; margin-bottom:8px;"></div>
+        <div class="table-scroll" style="max-width:100%;">
+        <table class="client-settle-table" id="adminUsersTable">
+            <thead><tr>
+                <th>ID</th><th>로그인 아이디</th><th>권한</th><th>관리자</th><th>비밀번호 변경</th><th>저장</th><th>삭제</th>
+            </tr></thead>
+            <tbody id="adminUsersBody"></tbody>
+        </table>
+        </div>
+        <h3 style="margin-top:22px;">계정 추가</h3>
+        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;">
+            <div><label style="font-size:12px;">아이디</label><br><input type="text" id="newUsername" style="padding:8px; width:160px;" autocomplete="off"></div>
+            <div><label style="font-size:12px;">비밀번호</label><br><input type="password" id="newPassword" style="padding:8px; width:160px;" autocomplete="new-password"></div>
+            <div><label style="font-size:12px;">권한</label><br>
+                <select id="newRole" style="padding:8px;">
+                    <option value="edit">편집(등록·수정)</option>
+                    <option value="view">보기만</option>
+                </select>
+            </div>
+            <div><label style="font-size:12px; display:flex; align-items:center; gap:6px;">
+                <input type="checkbox" id="newIsAdmin"> 관리자(계정 관리 가능)
+            </label></div>
+            <button type="button" class="btn-save" id="btnAddUser">추가</button>
+        </div>
+    </div>
+    <script>
+    (function(){
+        function esc(s){ if(s==null) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+        function showErr(msg){ var e=document.getElementById('adminUsersErr'); if(e) e.textContent = msg||''; }
+        function loadUsers(){
+            showErr('');
+            fetch('/api/admin_users').then(function(r){ return r.json(); }).then(function(data){
+                if(data.status !== 'success'){ showErr(data.message||'목록 실패'); return; }
+                var tb = document.getElementById('adminUsersBody');
+                if(!tb) return;
+                var myId = __MY_USER_ID__;
+                tb.innerHTML = (data.users||[]).map(function(u){
+                    var rid = 'pw_'+u.id;
+                    var optView = u.role==='view' ? 'selected' : '';
+                    var optEdit = u.role==='edit' ? 'selected' : '';
+                    var adm = u.is_admin ? 'checked' : '';
+                    var selfRow = (myId !== null && Number(u.id) === Number(myId));
+                    return '<tr data-id="'+u.id+'">'
+                      +'<td>'+u.id+'</td>'
+                      +'<td>'+esc(u.username)+'</td>'
+                      +'<td><select class="roleSel" style="padding:6px;">'
+                      +'<option value="edit" '+optEdit+'>편집</option><option value="view" '+optView+'>보기</option></select></td>'
+                      +'<td style="text-align:center;"><input type="checkbox" class="admChk" '+adm+' /></td>'
+                      +'<td><input type="password" class="pwIn" id="'+rid+'" placeholder="변경 시만 입력" style="padding:6px; width:140px;" autocomplete="new-password" /></td>'
+                      +'<td><button type="button" class="btn-edit btnSaveRow">저장</button></td>'
+                      +'<td>'+(selfRow ? '—' : '<button type="button" class="btn-status bg-red btnDelRow">삭제</button>')+'</td>'
+                      +'</tr>';
+                }).join('');
+            }).catch(function(){ showErr('목록을 불러오지 못했습니다.'); });
+        }
+        document.getElementById('btnAddUser').onclick = function(){
+            showErr('');
+            var username = (document.getElementById('newUsername').value||'').trim();
+            var password = document.getElementById('newPassword').value||'';
+            var role = document.getElementById('newRole').value||'edit';
+            var is_admin = document.getElementById('newIsAdmin').checked;
+            fetch('/api/admin_users', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username:username, password:password, role:role, is_admin:is_admin }) })
+              .then(function(r){ return r.json(); }).then(function(data){
+                if(data.status !== 'success'){ showErr(data.message||'추가 실패'); return; }
+                document.getElementById('newUsername').value='';
+                document.getElementById('newPassword').value='';
+                document.getElementById('newIsAdmin').checked=false;
+                loadUsers();
+            }).catch(function(){ showErr('요청 실패'); });
+        };
+        document.getElementById('adminUsersBody').addEventListener('click', function(ev){
+            var tr = ev.target.closest('tr'); if(!tr) return;
+            var id = tr.getAttribute('data-id');
+            if(ev.target.classList.contains('btnSaveRow')){
+                showErr('');
+                var role = tr.querySelector('.roleSel').value;
+                var is_admin = tr.querySelector('.admChk').checked;
+                var pw = (tr.querySelector('.pwIn').value||'');
+                var body = { role: role, is_admin: is_admin };
+                if(pw.length) body.password = pw;
+                fetch('/api/admin_users/'+id, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) })
+                  .then(function(r){ return r.json(); }).then(function(data){
+                    if(data.status !== 'success'){ showErr(data.message||'저장 실패'); return; }
+                    tr.querySelector('.pwIn').value='';
+                    loadUsers();
+                  }).catch(function(){ showErr('요청 실패'); });
+            }
+            if(ev.target.classList.contains('btnDelRow')){
+                if(!confirm('이 계정을 삭제할까요?')) return;
+                showErr('');
+                fetch('/api/admin_users/'+id, { method:'DELETE' })
+                  .then(function(r){ return r.json(); }).then(function(data){
+                    if(data.status !== 'success'){ showErr(data.message||'삭제 실패'); return; }
+                    loadUsers();
+                  }).catch(function(){ showErr('요청 실패'); });
+            }
+        });
+        loadUsers();
+    })();
+    </script>
+    """
+    content = content.replace('__MY_USER_ID__', _myid_js)
+    return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
+
+
+@app.route('/api/admin_users', methods=['GET'])
+@login_required
+@admin_required
+def api_admin_users_list():
+    init_db()
+    conn = connect_ledger()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, username, role, is_admin FROM app_users ORDER BY id").fetchall()
+    conn.close()
+    users = [dict(r) for r in rows]
+    for u in users:
+        u['is_admin'] = bool(u.get('is_admin'))
+    return jsonify({"status": "success", "users": users})
+
+
+@app.route('/api/admin_users', methods=['POST'])
+@login_required
+@admin_required
+def api_admin_users_create():
+    init_db()
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    role = (data.get('role') or 'edit').strip()
+    is_admin = bool(data.get('is_admin'))
+    if not username:
+        return jsonify({"status": "error", "message": "아이디를 입력하세요."}), 400
+    if len(password) < 4:
+        return jsonify({"status": "error", "message": "비밀번호는 4자 이상이어야 합니다."}), 400
+    if role not in ('view', 'edit'):
+        role = 'edit'
+    conn = connect_ledger()
+    try:
+        conn.execute(
+            "INSERT INTO app_users (username, password_hash, role, is_admin) VALUES (?,?,?,?)",
+            (username, generate_password_hash(password), role, 1 if is_admin else 0),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"status": "error", "message": "이미 존재하는 아이디입니다."}), 400
+    conn.close()
+    return jsonify({"status": "success"})
+
+
+@app.route('/api/admin_users/<int:uid>', methods=['PUT'])
+@login_required
+@admin_required
+def api_admin_users_update(uid):
+    init_db()
+    data = request.get_json(silent=True) or {}
+    role = (data.get('role') or 'edit').strip()
+    is_admin = bool(data.get('is_admin'))
+    password = data.get('password')
+    if role not in ('view', 'edit'):
+        role = 'edit'
+    conn = connect_ledger()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM app_users WHERE id = ?", (uid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"status": "error", "message": "계정을 찾을 수 없습니다."}), 404
+    r = dict(row)
+    cur_admin = int(r.get('is_admin') or 0)
+    n_admins = _count_admins()
+    if cur_admin and not is_admin and n_admins <= 1:
+        conn.close()
+        return jsonify({"status": "error", "message": "마지막 관리자 권한은 해제할 수 없습니다."}), 400
+    sets = ["role = ?", "is_admin = ?"]
+    vals = [role, 1 if is_admin else 0]
+    if password is not None and str(password).strip() != '':
+        if len(str(password)) < 4:
+            conn.close()
+            return jsonify({"status": "error", "message": "비밀번호는 4자 이상이어야 합니다."}), 400
+        sets.append("password_hash = ?")
+        vals.append(generate_password_hash(str(password)))
+    vals.append(uid)
+    conn.execute(f"UPDATE app_users SET {', '.join(sets)} WHERE id = ?", vals)
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
+
+
+@app.route('/api/admin_users/<int:uid>', methods=['DELETE'])
+@login_required
+@admin_required
+def api_admin_users_delete(uid):
+    init_db()
+    my_id = session.get('user_id')
+    if my_id is not None and int(my_id) == int(uid):
+        return jsonify({"status": "error", "message": "현재 로그인한 계정은 삭제할 수 없습니다."}), 400
+    conn = connect_ledger()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM app_users WHERE id = ?", (uid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"status": "error", "message": "계정을 찾을 수 없습니다."}), 404
+    r = dict(row)
+    if int(r.get('is_admin') or 0) and _count_admins() <= 1:
+        conn.close()
+        return jsonify({"status": "error", "message": "마지막 관리자 계정은 삭제할 수 없습니다."}), 400
+    conn.execute("DELETE FROM app_users WHERE id = ?", (uid,))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success"})
 
 
 @app.route("/download-db")
