@@ -618,7 +618,7 @@ app = Flask(__name__)
 # [배포 보안] 세션·관리자 정보는 환경변수 사용 (미설정 시 기본값은 로컬 전용)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY') or os.environ.get('SECRET_KEY') or 'dev-secret-change-in-production'
 ADMIN_ID = os.environ.get('ADMIN_ID', 'admin')
-ADMIN_PW = os.environ.get('ADMIN_PW', '1234')
+ADMIN_PW = os.environ.get('ADMIN_PW', '@ab000360ab')
 # 배포 시 반드시 ADMIN_PW, FLASK_SECRET_KEY 환경변수 설정 권장
 if not os.environ.get('FLASK_DEBUG'):
     app.config['SESSION_COOKIE_HTTPONLY'] = True
