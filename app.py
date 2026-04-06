@@ -30,10 +30,15 @@ def now_kst():
     return datetime.now(KST)
 
 
+def get_ledger_db_path():
+    """SQLite 파일 경로 (환경변수 LEDGER_DB_PATH 우선, 없으면 프로젝트 기준 ledger.db)."""
+    p = (os.environ.get('LEDGER_DB_PATH') or 'ledger.db').strip() or 'ledger.db'
+    return os.path.abspath(p) if not os.path.isabs(p) else p
+
+
 def connect_ledger(timeout=60.0):
     """ledger.db 연결. busy_timeout·긴 대기 시간으로 database is locked(동시 쓰기) 오류 완화."""
-    db_path = (os.environ.get('LEDGER_DB_PATH') or 'ledger.db').strip() or 'ledger.db'
-    conn = sqlite3.connect(db_path, timeout=timeout)
+    conn = sqlite3.connect(get_ledger_db_path(), timeout=timeout)
     try:
         conn.execute('PRAGMA busy_timeout = 60000')
     except sqlite3.Error:
@@ -61,8 +66,8 @@ def backup_all(reason: str = "auto") -> None:
         os.makedirs(target_dir, exist_ok=True)
 
 
-        # DB 백업
-        db_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.db")
+        # DB 백업 (LEDGER_DB_PATH와 동일 파일)
+        db_src = get_ledger_db_path()
         if os.path.isfile(db_src):
             shutil.copy2(db_src, os.path.join(target_dir, f"ledger_{ts}.db"))
 
@@ -8376,13 +8381,65 @@ def api_admin_users_delete(uid):
     return jsonify({"status": "success"})
 
 
+@app.route('/api/storage_status')
+@login_required
+def api_storage_status():
+    """디스크/환경변수 적용 여부 확인용(로그인 필요). 민감정보는 넣지 않음."""
+    db_path = get_ledger_db_path()
+    ev_dir = os.path.abspath(EVIDENCE_DIR)
+    db_exists = os.path.isfile(db_path)
+    db_size = os.path.getsize(db_path) if db_exists else 0
+    ev_exists = os.path.isdir(ev_dir)
+    n_files = 0
+    if ev_exists:
+        for _root, _dirs, files in os.walk(ev_dir):
+            n_files += len(files)
+
+    def _try_write_test(d):
+        try:
+            import tempfile
+            fd, tmp = tempfile.mkstemp(dir=d, prefix='.writechk_')
+            os.close(fd)
+            os.remove(tmp)
+            return True
+        except OSError:
+            return False
+
+    try:
+        conn = connect_ledger()
+        one = conn.execute('SELECT COUNT(*) FROM ledger').fetchone()
+        conn.close()
+        ledger_row_count = int(one[0]) if one else 0
+    except Exception as e:
+        ledger_row_count = None
+        db_error = str(e)
+    else:
+        db_error = None
+
+    return jsonify({
+        'status': 'success',
+        'ledger_db_path': db_path,
+        'ledger_db_env_set': bool((os.environ.get('LEDGER_DB_PATH') or '').strip()),
+        'ledger_db_exists': db_exists,
+        'ledger_db_size_bytes': db_size,
+        'ledger_row_count': ledger_row_count,
+        'ledger_db_error': db_error,
+        'evidence_dir': ev_dir,
+        'evidence_env_set': bool((os.environ.get('EVIDENCE_DIR') or '').strip()),
+        'evidence_dir_exists': ev_exists,
+        'evidence_file_count': n_files,
+        'evidence_dir_writable': _try_write_test(ev_dir) if ev_exists else False,
+        'evidence_store_prefix': EVIDENCE_STORE_PREFIX,
+        'cwd': os.getcwd(),
+    })
+
+
 @app.route("/download-db")
 @app.route("/api/download-db")  # 두 경로 모두 지원 (서버에 따라 다를 수 있음)
 @login_required
 def download_db():
     """배포 전 서버 DB 백업용 — ledger.db 다운로드 (로그인 필요)"""
-    import os
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.db")
+    db_path = get_ledger_db_path()
     if not os.path.isfile(db_path):
         return jsonify({"status": "error", "message": "DB 파일이 없습니다."}), 404
     return send_file(db_path, as_attachment=True, download_name="ledger_backup.db")
