@@ -32,7 +32,8 @@ def now_kst():
 
 def connect_ledger(timeout=60.0):
     """ledger.db 연결. busy_timeout·긴 대기 시간으로 database is locked(동시 쓰기) 오류 완화."""
-    conn = sqlite3.connect('ledger.db', timeout=timeout)
+    db_path = (os.environ.get('LEDGER_DB_PATH') or 'ledger.db').strip() or 'ledger.db'
+    conn = sqlite3.connect(db_path, timeout=timeout)
     try:
         conn.execute('PRAGMA busy_timeout = 60000')
     except sqlite3.Error:
@@ -700,10 +701,37 @@ def _inject_permissions():
     )
 
 
-# 이미지 업로드 폴더 설정
-UPLOAD_FOLDER = 'static/evidences'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# 증빙(사진) 저장 경로
+# - 로컬 기본: static/evidences (Flask static으로 바로 서빙)
+# - Render 퍼시스턴트 디스크 권장: EVIDENCE_DIR=/var/data/evidences  (아래 /evidences 라우트로 서빙)
+EVIDENCE_DIR = (os.environ.get('EVIDENCE_DIR') or 'static/evidences').strip() or 'static/evidences'
+if not os.path.exists(EVIDENCE_DIR):
+    os.makedirs(EVIDENCE_DIR, exist_ok=True)
+
+def _evidence_store_prefix():
+    # static 안이면 그대로 저장(기존 호환), 아니면 /evidences 라우트용 prefix 사용
+    norm = EVIDENCE_DIR.replace('\\', '/').lstrip('/')
+    if norm.startswith('static/'):
+        return 'static/evidences'
+    return 'evidences'
+
+EVIDENCE_STORE_PREFIX = _evidence_store_prefix()
+
+def _evidence_store_path(filename: str) -> str:
+    fn = (filename or '').replace('\\', '/').lstrip('/')
+    return f"{EVIDENCE_STORE_PREFIX}/{fn}"
+
+def _evidence_fs_path(filename: str) -> str:
+    fn = (filename or '').replace('\\', '/').lstrip('/')
+    return os.path.join(EVIDENCE_DIR, fn)
+
+@app.route('/evidences/<path:filename>')
+@login_required
+def serve_evidence(filename):
+    # EVIDENCE_DIR가 static 밖일 때도 접근 가능하게 서빙
+    # (view 권한은 GET 가능, 단 DB 다운로드 등은 before_request에서 차단)
+    safe = (filename or '').replace('\\', '/').lstrip('/')
+    return send_file(_evidence_fs_path(safe))
 
 # 은행명 → 은행코드 매핑 (미지급 기사 엑셀용)
 BANK_NAME_TO_CODE = {
@@ -1283,7 +1311,7 @@ BASE_HTML = """
         if(!src || src.includes('❌') || src === '/' || src.includes('None') || src == '') return;
         let path = (typeof src === 'string') ? src.trim() : '';
         if(path.includes(',')) path = path.split(',')[0].trim();
-        if(path && path.startsWith('static')) {
+        if(path && (path.startsWith('static/') || path.startsWith('evidences/'))) {
             document.getElementById('modalImg').src = '/' + path;
             document.getElementById('imgModal').style.display = 'block';
         }
@@ -1707,7 +1735,7 @@ function loadLedgerList() {
                     let paths = (val || '').toString().split(',').map(p => p.trim());
                     let btns = '<div style="display:flex; gap:2px; justify-content:center;">';
                     for(let i=0; i<5; i++) {
-                        let p = (paths[i] && paths[i].startsWith('static')) ? paths[i] : '';
+                        let p = (paths[i] && (paths[i].startsWith('static/') || paths[i].startsWith('evidences/'))) ? paths[i] : '';
                         let safe = p ? p.replace(/'/g, "\\'") : '';
                         if(p) btns += `<button class="img-num-btn active" onclick="viewImg('${safe}')">${i+1}</button>`;
                         else btns += `<button class="img-num-btn" style="cursor:default; color:#ccc;">${i+1}</button>`;
@@ -2875,8 +2903,8 @@ def settlement():
         total2 = fee_out_val + vat2
         order_no = "n" + str(row['id']).zfill(2)
         _esc_attr = lambda x: (str(x) or '').replace('"', '&quot;')[:200]
-        has_tax = '1' if any('static' in p for p in (row.get('tax_img') or '').split(',')) else '0'
-        has_ship = '1' if any('static' in p for p in (row.get('ship_img') or '').split(',')) else '0'
+        has_tax = '1' if any(p.strip().startswith(('static/', 'evidences/')) for p in (row.get('tax_img') or '').split(',')) else '0'
+        has_ship = '1' if any(p.strip().startswith(('static/', 'evidences/')) for p in (row.get('ship_img') or '').split(',')) else '0'
         me_c = '1' if (str(row.get('month_end_client') or '').strip() in ('1', 'Y')) else '0'
         me_d = '1' if (str(row.get('month_end_driver') or '').strip() in ('1', 'Y')) else '0'
         _tax_chk_val = '발행완료' if tax_chk_ok else ''
@@ -6151,9 +6179,23 @@ def upload_evidence(ledger_id):
             plist[idx] = ""
             new_val = ",".join(plist)
             conn.execute(f"UPDATE ledger SET [{col}] = ? WHERE id = ?", (new_val, ledger_id))
-            if old_path and os.path.exists(old_path):
+            def _evidence_to_fs_path(stored_path: str) -> str:
+                sp = (stored_path or '').replace('\\', '/').strip()
+                if not sp:
+                    return ''
+                # legacy: static/evidences/...
+                if sp.startswith('static/evidences/'):
+                    return sp
+                # new: evidences/...
+                if sp.startswith('evidences/'):
+                    return _evidence_fs_path(sp[len('evidences/'):])
+                # absolute/other: 그대로 시도
+                return stored_path
+
+            old_fs = _evidence_to_fs_path(old_path)
+            if old_fs and os.path.exists(old_fs):
                 try:
-                    os.remove(old_path)
+                    os.remove(old_fs)
                 except OSError:
                     pass
             conn.commit()
@@ -6178,14 +6220,20 @@ def upload_evidence(ledger_id):
         today_str = now_kst().strftime("%Y-%m-%d")
         if tax_file and tax_file.filename:
             safe_name = secure_filename(tax_file.filename) or "upload.jpg"
-            path = os.path.join(UPLOAD_FOLDER, f"tax_{ledger_id}_{target_seq}_{safe_name}")
-            tax_file.save(path); conn.execute("UPDATE ledger SET tax_img = ? WHERE id = ?", (update_p(row['tax_img'] or "", path, target_seq), ledger_id))
+            filename = f"tax_{ledger_id}_{target_seq}_{safe_name}"
+            fs_path = _evidence_fs_path(filename)
+            store_path = _evidence_store_path(filename)
+            tax_file.save(fs_path)
+            conn.execute("UPDATE ledger SET tax_img = ? WHERE id = ?", (update_p(row['tax_img'] or "", store_path, target_seq), ledger_id))
             # 매입계산서 사진 업로드 시 공급자 계산서 발행일을 오늘로 설정(확인 처리)
             conn.execute("UPDATE ledger SET issue_dt = ? WHERE id = ?", (today_str, ledger_id))
         if ship_file and ship_file.filename:
             safe_name = secure_filename(ship_file.filename) or "upload.jpg"
-            path = os.path.join(UPLOAD_FOLDER, f"ship_{ledger_id}_{target_seq}_{safe_name}")
-            ship_file.save(path); conn.execute("UPDATE ledger SET ship_img = ? WHERE id = ?", (update_p(row['ship_img'] or "", path, target_seq), ledger_id))
+            filename = f"ship_{ledger_id}_{target_seq}_{safe_name}"
+            fs_path = _evidence_fs_path(filename)
+            store_path = _evidence_store_path(filename)
+            ship_file.save(fs_path)
+            conn.execute("UPDATE ledger SET ship_img = ? WHERE id = ?", (update_p(row['ship_img'] or "", store_path, target_seq), ledger_id))
             # 매출처 인수증 사진 업로드 시 인수증전송일·확인완료 처리
             conn.execute("UPDATE ledger SET mail_dt = ?, is_mail_done = ? WHERE id = ?", (today_str, "확인완료", ledger_id))
         conn.commit(); conn.close(); return "<h3>업로드 완료</h3><script>setTimeout(()=>location.reload(), 1000);</script>"
