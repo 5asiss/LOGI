@@ -408,14 +408,21 @@ def _row_matches_q_tax_biz2(row, q_tax_biz2):
     return q in v
 
 
-# 정산·통계: 매입사업자 구분 체크박스(홍진/에스엠/스퀘어) — DB에는 쉼표로 연결 저장
-TAX_BIZ2_CHECKBOX_TAGS = ('홍진', '에스엠', '스퀘어')
+# 정산·통계: 매입/매출 사업자 구분 체크박스(흥진/에스엠/스퀘어) — DB에는 쉼표로 연결 저장
+TAX_BIZ2_CHECKBOX_TAGS = ('흥진', '에스엠', '스퀘어')
+
+# 하위호환: 기존 DB/엑셀에 '홍진'이 저장된 경우도 '흥진'으로 취급
+TAX_BIZ2_TAG_ALIASES = {
+    '흥진': ('흥진', '홍진'),
+    '에스엠': ('에스엠',),
+    '스퀘어': ('스퀘어',),
+}
 
 
 def _tax_biz2_tags_from_args(tb2_hj, tb2_sm, tb2_sq):
     tags = []
     if str(tb2_hj or '').strip() == '1':
-        tags.append('홍진')
+        tags.append('흥진')
     if str(tb2_sm or '').strip() == '1':
         tags.append('에스엠')
     if str(tb2_sq or '').strip() == '1':
@@ -429,7 +436,12 @@ def _tax_biz2_parse_stored(s):
         return []
     raw = str(s).replace('，', ',')
     parts = [p.strip() for p in raw.split(',') if p.strip()]
-    return [lab for lab in TAX_BIZ2_CHECKBOX_TAGS if lab in parts]
+    out = []
+    for lab in TAX_BIZ2_CHECKBOX_TAGS:
+        aliases = TAX_BIZ2_TAG_ALIASES.get(lab, (lab,))
+        if any(a in parts for a in aliases):
+            out.append(lab)
+    return out
 
 
 def _tax_biz2_join_tags(tags):
@@ -441,7 +453,11 @@ def _row_matches_tax_biz2_tags(row, tags):
         return True
     row = dict(row) if hasattr(row, 'keys') else row
     v = str(row.get('tax_biz2') or '')
-    return any(t in v for t in tags)
+    for t in tags:
+        aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
+        if any(a in v for a in aliases):
+            return True
+    return False
 
 
 def _row_matches_tax_biz2_combined(row, tb2_tags, q_tax_biz2_legacy):
@@ -453,10 +469,15 @@ def _row_matches_tax_biz2_combined(row, tb2_tags, q_tax_biz2_legacy):
 
 def _sql_append_tax_biz2(conditions, params, tb2_tags, q_tax_biz2_legacy):
     if tb2_tags:
-        or_parts = ["COALESCE(tax_biz2,'') LIKE ?" for _ in tb2_tags]
-        conditions.append("(" + " OR ".join(or_parts) + ")")
+        # tag 별 alias(흥진/홍진)까지 OR 처리
+        like_parts = []
         for t in tb2_tags:
-            params.append(f"%{t}%")
+            aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
+            sub = ["COALESCE(tax_biz2,'') LIKE ?" for _ in aliases]
+            like_parts.append("(" + " OR ".join(sub) + ")")
+            for a in aliases:
+                params.append(f"%{a}%")
+        conditions.append("(" + " OR ".join(like_parts) + ")")
     elif (q_tax_biz2_legacy or '').strip():
         conditions.append("COALESCE(tax_biz2,'') LIKE ?")
         params.append(f"%{(q_tax_biz2_legacy or '').strip()}%")
@@ -480,13 +501,18 @@ def _settlement_tax_biz2_cell_html(rid, tax_biz2_raw):
 def _sql_append_biz_issue_tags(conditions, params, sb2_tags, q_biz_issue_legacy):
     """매출사업자구분: 체크박스 태그(OR) 또는 레거시 자유 검색 — pay_to·biz_issue 모두 검색."""
     if sb2_tags:
+        # tag 별 alias(흥진/홍진)까지 OR 처리 (pay_to, biz_issue 둘 다)
         or_parts = []
-        for _ in sb2_tags:
-            or_parts.append("(COALESCE(pay_to,'') LIKE ? OR COALESCE(biz_issue,'') LIKE ?)")
-        conditions.append("(" + " OR ".join(or_parts) + ")")
         for t in sb2_tags:
-            pat = f"%{t}%"
-            params.extend([pat, pat])
+            aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
+            sub = []
+            for _a in aliases:
+                sub.append("(COALESCE(pay_to,'') LIKE ? OR COALESCE(biz_issue,'') LIKE ?)")
+            or_parts.append("(" + " OR ".join(sub) + ")")
+            for a in aliases:
+                pat = f"%{a}%"
+                params.extend([pat, pat])
+        conditions.append("(" + " OR ".join(or_parts) + ")")
     else:
         _append_ledger_q_biz_issue_sql(conditions, params, q_biz_issue_legacy)
 
@@ -497,7 +523,11 @@ def _row_matches_biz_issue_tags(row, tags):
     row = dict(row) if hasattr(row, 'keys') else row
     pay_to = str(row.get('pay_to') or '')
     biz_issue = str(row.get('biz_issue') or '')
-    return any((t in pay_to or t in biz_issue) for t in tags)
+    for t in tags:
+        aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
+        if any((a in pay_to or a in biz_issue) for a in aliases):
+            return True
+    return False
 
 
 def _row_matches_biz_issue_combined(row, sb2_tags, q_biz_issue_legacy):
@@ -507,7 +537,7 @@ def _row_matches_biz_issue_combined(row, sb2_tags, q_biz_issue_legacy):
 
 
 def _settlement_pay_to_cell_html(rid, pay_to_raw):
-    """매출사업자구분(pay_to): 홍진/에스엠/스퀘어 체크 — 기타 토큰(개인·법인 등)은 쉼표 유지 후 저장 시 병합."""
+    """매출사업자구분(pay_to): 흥진/에스엠/스퀘어 체크 — 기타 토큰(개인·법인 등)은 쉼표 유지 후 저장 시 병합."""
     raw = str(pay_to_raw or '')
     picked = set(_tax_biz2_parse_stored(raw))
     raw_attr = html.escape(raw, quote=True)
@@ -3165,13 +3195,13 @@ def settlement():
         <input type="text" name="q_client" value="{_qe(q_client)}" placeholder="매출처" style="width:90px;" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
         <strong>매입사업자 구분:</strong>
         <span style="font-size:12px; display:inline-flex; flex-wrap:wrap; gap:8px; align-items:center;">
-        <label style="white-space:nowrap;"><input type="checkbox" name="tb2_hj" value="1" {"checked" if q_tb2_hj == "1" else ""}> 홍진</label>
+        <label style="white-space:nowrap;"><input type="checkbox" name="tb2_hj" value="1" {"checked" if q_tb2_hj == "1" else ""}> 흥진</label>
         <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sm" value="1" {"checked" if q_tb2_sm == "1" else ""}> 에스엠</label>
         <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sq" value="1" {"checked" if q_tb2_sq == "1" else ""}> 스퀘어</label>
         </span>
         <strong>매출사업자 구분:</strong>
         <span style="font-size:12px; display:inline-flex; flex-wrap:wrap; gap:8px; align-items:center;">
-        <label style="white-space:nowrap;"><input type="checkbox" name="sb2_hj" value="1" {"checked" if q_sb2_hj == "1" else ""}> 홍진</label>
+        <label style="white-space:nowrap;"><input type="checkbox" name="sb2_hj" value="1" {"checked" if q_sb2_hj == "1" else ""}> 흥진</label>
         <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sm" value="1" {"checked" if q_sb2_sm == "1" else ""}> 에스엠</label>
         <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sq" value="1" {"checked" if q_sb2_sq == "1" else ""}> 스퀘어</label>
         </span>
@@ -3285,7 +3315,7 @@ def settlement():
     window.settlementTaxBiz2Commit = function(rid, el) {{
         var wrap = el.closest('.tax-biz2-checks');
         if (!wrap) return;
-        var order = ['홍진', '에스엠', '스퀘어'];
+        var order = ['흥진', '에스엠', '스퀘어'];
         var out = [];
         for (var i = 0; i < order.length; i++) {{
             var cb = wrap.querySelector('input[data-tb2-tag="' + order[i] + '"]');
@@ -3296,7 +3326,7 @@ def settlement():
     window.settlementSalesBizCommit = function(rid, el) {{
         var wrap = el.closest('.sales-biz-checks');
         if (!wrap) return;
-        var order = ['홍진', '에스엠', '스퀘어'];
+        var order = ['흥진', '에스엠', '스퀘어'];
         var raw = wrap.getAttribute('data-pay-to-raw') || '';
         try {{ raw = raw.replace(/&quot;/g, '"'); }} catch (e) {{}}
         var parts = raw.split(/[,，]/).map(function(s) {{ return s.trim(); }}).filter(Boolean);
@@ -4661,11 +4691,11 @@ def statistics():
                     <strong style="margin-left:8px;">📞 전화번호</strong>
                     <input type="text" name="q_phone" value="{q_phone}" placeholder="전화번호" onkeydown="if(event.key==='Enter'){{event.preventDefault();this.form.submit();}}">
                     <strong style="margin-left:8px;">🏷 매출사업자구분</strong>
-                    <label style="margin-left:4px; white-space:nowrap;"><input type="checkbox" name="sb2_hj" value="1" {"checked" if (request.args.get('sb2_hj') or '').strip() == "1" else ""}> 홍진</label>
+                    <label style="margin-left:4px; white-space:nowrap;"><input type="checkbox" name="sb2_hj" value="1" {"checked" if (request.args.get('sb2_hj') or '').strip() == "1" else ""}> 흥진</label>
                     <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sm" value="1" {"checked" if (request.args.get('sb2_sm') or '').strip() == "1" else ""}> 에스엠</label>
                     <label style="white-space:nowrap;"><input type="checkbox" name="sb2_sq" value="1" {"checked" if (request.args.get('sb2_sq') or '').strip() == "1" else ""}> 스퀘어</label>
                     <strong style="margin-left:8px;">📎 매입사업자구분</strong>
-                    <label style="margin-left:4px; white-space:nowrap;"><input type="checkbox" name="tb2_hj" value="1" {"checked" if (request.args.get('tb2_hj') or '').strip() == "1" else ""}> 홍진</label>
+                    <label style="margin-left:4px; white-space:nowrap;"><input type="checkbox" name="tb2_hj" value="1" {"checked" if (request.args.get('tb2_hj') or '').strip() == "1" else ""}> 흥진</label>
                     <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sm" value="1" {"checked" if (request.args.get('tb2_sm') or '').strip() == "1" else ""}> 에스엠</label>
                     <label style="white-space:nowrap;"><input type="checkbox" name="tb2_sq" value="1" {"checked" if (request.args.get('tb2_sq') or '').strip() == "1" else ""}> 스퀘어</label>
                 </div>
@@ -6881,7 +6911,7 @@ def ledger_upload():
     header_to_key = {'id': 'id'}
     for c in FULL_COLUMNS:
         header_to_key[c['n']] = c['k']
-    # 매출사업자구분: 정산·장부 화면에서 쓰는 pay_to (홍진/에스엠/스퀘어 체크 + 기타 토큰)
+    # 매출사업자구분: 정산·장부 화면에서 쓰는 pay_to (흥진/에스엠/스퀘어 체크 + 기타 토큰)
     # (과거에 '매출사업자구분' 헤더를 tax_biz(현금확인)로 쓰던 구 양식이 있을 수 있으나,
     #  현재는 '현금확인' 헤더를 tax_biz로 사용하므로 여기서는 pay_to로 고정)
     header_to_key['매출사업자구분'] = 'pay_to'
