@@ -1280,10 +1280,10 @@ BASE_HTML = """
 <body>
     <div class="nav">
         <div class="nav-links">
-            <a href="/">통합장부입력</a>
+            <a href="/" data-nav="ledger">통합장부입력</a>
             <a href="/arrival">도착현황</a>
-            <a href="/settlement">정산관리</a>
-            <a href="/statistics">통계분석</a>
+            <a href="/settlement" data-nav="settlement">정산관리</a>
+            <a href="/statistics" data-nav="statistics">통계분석</a>
             <a href="/manage_drivers">기사관리</a>
             <a href="/manage_clients">업체관리</a>
             {% if session_is_admin %}<a href="/admin">관리</a>{% endif %}
@@ -1325,6 +1325,118 @@ BASE_HTML = """
 
     function todayKST() { return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }); }
     function nowKSTLocal() { const s = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Seoul', hour12: false }); return s.replace(' ', 'T').slice(0, 16); }
+
+    // --- 배차일(start/end) 공통 연동 + 기본 최근 90일 ---
+    function _qsGet(name) { try { return (new URLSearchParams(location.search)).get(name); } catch(e) { return null; } }
+    function _qsHas(name) { const v = _qsGet(name); return v !== null && String(v).trim() !== ''; }
+    function _qsSet(url, key, val) {
+        const u = new URL(url, location.origin);
+        if (val === null || val === undefined || String(val).trim() === '') u.searchParams.delete(key);
+        else u.searchParams.set(key, String(val));
+        return u.pathname + (u.searchParams.toString() ? '?' + u.searchParams.toString() : '');
+    }
+    function _addDaysISO(iso, delta) {
+        try {
+            const d = new Date(iso + 'T00:00:00+09:00');
+            d.setDate(d.getDate() + delta);
+            return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
+        } catch(e) { return iso; }
+    }
+    function getGlobalDispatchRange90() {
+        const end = todayKST();
+        const start = _addDaysISO(end, -89); // 최근 90일(포함)
+        return { start, end };
+    }
+    function getSavedDispatchRange() {
+        try {
+            const s = (sessionStorage.getItem('saved_start') || '').trim();
+            const e = (sessionStorage.getItem('saved_end') || '').trim();
+            return { start: s, end: e };
+        } catch(e) { return { start: '', end: '' }; }
+    }
+    function setSavedDispatchRange(start, end) {
+        try {
+            if (start) sessionStorage.setItem('saved_start', start);
+            if (end) sessionStorage.setItem('saved_end', end);
+        } catch(e) {}
+    }
+    window.resetDispatchRangeTo90 = function(targetPath){
+        try {
+            sessionStorage.removeItem('saved_start');
+            sessionStorage.removeItem('saved_end');
+            sessionStorage.removeItem('saved_order_start');
+            sessionStorage.removeItem('saved_order_end');
+        } catch(e) {}
+        const d = getGlobalDispatchRange90();
+        setSavedDispatchRange(d.start, d.end);
+        syncNavLinksWithDispatchRange(d.start, d.end);
+        const next = _qsSet(_qsSet(String(targetPath || '/'), 'start', d.start), 'end', d.end);
+        location.href = next;
+    };
+    function syncNavLinksWithDispatchRange(start, end) {
+        document.querySelectorAll('a[data-nav]').forEach(function(a){
+            const href = a.getAttribute('href') || '';
+            if (!href.startsWith('/')) return;
+            let next = href;
+            // 도착현황 등은 제외(데이터 큰 페이지 아님), ledger/settlement/statistics만 연동
+            const kind = a.getAttribute('data-nav');
+            if (!kind) return;
+            next = _qsSet(next, 'start', start);
+            next = _qsSet(next, 'end', end);
+            a.setAttribute('href', next);
+        });
+    }
+    function ensureDispatchRangeDefaults() {
+        // URL에 start/end가 없으면: saved_start/end → 없으면 최근 90일로 고정
+        const hasStart = _qsHas('start');
+        const hasEnd = _qsHas('end');
+        if (hasStart || hasEnd) {
+            // 사용자가 지정한 값(고정) → 저장만 갱신
+            const s = (_qsGet('start') || '').trim();
+            const e = (_qsGet('end') || '').trim();
+            if (s && e) setSavedDispatchRange(s, e);
+            if (s || e) syncNavLinksWithDispatchRange(s, e);
+            return;
+        }
+        const saved = getSavedDispatchRange();
+        let s = saved.start, e = saved.end;
+        if (!s || !e) {
+            const d = getGlobalDispatchRange90();
+            s = d.start; e = d.end;
+            setSavedDispatchRange(s, e);
+        }
+        syncNavLinksWithDispatchRange(s, e);
+        // 페이지별 적용: 통합장부(클라이언트 조회) / 정산·통계(서버 렌더링)
+        const path = location.pathname || '';
+        if (path === '/' || path === '/settlement' || path === '/statistics') {
+            const next = _qsSet(_qsSet(location.pathname + location.search, 'start', s), 'end', e);
+            // start/end가 없는 상태에서만 1회 리다이렉트
+            if (next !== (location.pathname + location.search)) location.replace(next);
+        }
+    }
+    document.addEventListener('DOMContentLoaded', function(){
+        ensureDispatchRangeDefaults();
+        // 입력 변경 시 저장 + 네비 연동 (사용자 지정값은 고정 유지)
+        const ledgerStart = document.getElementById('startDate');
+        const ledgerEnd = document.getElementById('endDate');
+        const settleStart = document.querySelector('input[name="start"]');
+        const settleEnd = document.querySelector('input[name="end"]');
+        function bind(elStart, elEnd){
+            if (!elStart || !elEnd) return;
+            const handler = function(){
+                const s = (elStart.value || '').trim();
+                const e = (elEnd.value || '').trim();
+                if (s && e) {
+                    setSavedDispatchRange(s, e);
+                    syncNavLinksWithDispatchRange(s, e);
+                }
+            };
+            elStart.addEventListener('change', handler);
+            elEnd.addEventListener('change', handler);
+        }
+        bind(ledgerStart, ledgerEnd);
+        bind(settleStart, settleEnd);
+    });
 
     // 초성 추출 함수
     const getChosung = (str) => {
@@ -2067,6 +2179,25 @@ function loadLedgerList() {
             const modal = document.getElementById('ledgerEditModal');
             if (modal) modal.style.display = 'none';
         };
+        // 장부 수정 모달: Enter 키로 저장 (textarea 제외)
+        (function bindLedgerEditEnterSave(){
+            const form = document.getElementById('ledgerEditForm');
+            if (!form) return;
+            if (form.getAttribute('data-enter-save') === '1') return;
+            form.setAttribute('data-enter-save', '1');
+            form.addEventListener('keydown', function(ev){
+                if (ev.key !== 'Enter') return;
+                const t = ev.target;
+                if (!t) return;
+                const tag = (t.tagName || '').toLowerCase();
+                const type = (t.type || '').toLowerCase();
+                if (tag === 'textarea') return;
+                // 일부 input(버튼류)에서는 동작하지 않게
+                if (type && ['button','submit','reset','file'].includes(type)) return;
+                ev.preventDefault();
+                if (typeof submitLedgerEdit === 'function') submitLedgerEdit();
+            });
+        })();
         function submitLedgerEdit() {
             const form = document.getElementById('ledgerEditForm');
             if (!form) return;
@@ -2086,9 +2217,7 @@ function loadLedgerList() {
                         // 현재 스크롤 위치 저장 (목록 갱신 후 복원용)
                         var listEl = document.getElementById('ledgerListScroll');
                         if (listEl) try { sessionStorage.setItem('ledger_scroll', JSON.stringify({ left: listEl.scrollLeft, top: listEl.scrollTop })); } catch(e) {}
-                        // 장부목록에 수정된 행이 나오도록 필터 초기화 후 목록 새로고침
-                        var startEl = document.getElementById('startDate'); var endEl = document.getElementById('endDate');
-                        if (startEl) startEl.value = ''; if (endEl) endEl.value = '';
+                        // 장부목록 새로고침 (배차일 지정값은 유지)
                         var orderStartEl = document.getElementById('orderStartDate'); var orderEndEl = document.getElementById('orderEndDate');
                         if (orderStartEl) orderStartEl.value = ''; if (orderEndEl) orderEndEl.value = '';
                         var chkClient = document.getElementById('filterMonthEndClient'); var chkDriver = document.getElementById('filterMonthEndDriver');
@@ -2453,7 +2582,8 @@ def index():
             <div style="border-left:1px solid #ccc; height:24px; margin:0 8px;"></div>
             <button type="button" class="btn-status bg-blue" style="background:#ebf2ff; color:#1a2a6c; border:1px solid #1a2a6c;" onclick="setDateRange(7)">1주일</button>
             <button type="button" class="btn-status bg-blue" style="background:#ebf2ff; color:#1a2a6c; border:1px solid #1a2a6c;" onclick="setDateRange(30)">1달</button>
-            <button type="button" class="btn" onclick="try{{sessionStorage.removeItem('saved_start');sessionStorage.removeItem('saved_end');sessionStorage.removeItem('saved_order_start');sessionStorage.removeItem('saved_order_end');}}catch(e){{}} location.href='/';" >전체보기</button>
+            <button type="button" class="btn" onclick="resetDispatchRangeTo90('/')" title="배차일을 최근 90일로 초기화">초기화(90일)</button>
+            <button type="button" class="btn" onclick="try{{sessionStorage.removeItem('saved_start');sessionStorage.removeItem('saved_end');sessionStorage.removeItem('saved_order_start');sessionStorage.removeItem('saved_order_end');}}catch(e){{}} location.href='/';" title="날짜를 지우고 전체 조회(권장하지 않음)">전체보기</button>
         </div>
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
             <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="filterMonthEndClient" onchange="loadLedgerList()"> 업체 월말합산만</label>
@@ -2863,7 +2993,7 @@ def settlement():
             # 미리보기: 업로드된 이미지 썸네일 (클릭 시 모달로 확대)
             preview_html = ''
             for p in paths:
-                if p.startswith('static'):
+                if p.startswith('static/') or p.startswith('evidences/'):
                     path_js = p.replace('\\', '\\\\').replace("'", "\\'")
                     src = '/' + p if not p.startswith('/') else p
                     preview_html += f'<img src="{src}" style="width:28px;height:28px;object-fit:cover;cursor:pointer;border:1px solid #ccc;border-radius:4px;" onclick="event.stopPropagation(); viewImg(\'{path_js}\')" title="클릭 시 크게 보기" alt="">'
@@ -2871,7 +3001,7 @@ def settlement():
                 preview_html = f'<div style="display:flex; flex-wrap:wrap; gap:2px; justify-content:center; margin-bottom:4px;">{preview_html}</div>'
             links_html = '<div style="display:flex; flex-direction:column; align-items:center;">' + preview_html + '<div style="display:flex; gap:3px; justify-content:center;">'
             for i in range(1, 6):
-                has_file = len(paths) >= i and paths[i-1].startswith('static')
+                has_file = len(paths) >= i and (paths[i-1].startswith('static/') or paths[i-1].startswith('evidences/'))
                 css_class = "link-btn has-file" if has_file else "link-btn"
                 links_html += f'<a href="/upload_evidence/{ledger_id}?type={img_type}&seq={i}" target="_blank" class="{css_class}">{i}</a>'
             links_html += '</div></div>'
@@ -3074,7 +3204,7 @@ def settlement():
         </select>
         <span style="font-size:12px; color:#666;">개씩</span>
         <button type="submit" class="btn-save">조회</button>
-        <button type="button" onclick="try{{sessionStorage.removeItem('saved_start');sessionStorage.removeItem('saved_end');sessionStorage.removeItem('saved_order_start');sessionStorage.removeItem('saved_order_end');}}catch(e){{}} location.href='/settlement';" class="btn-status bg-gray">초기화</button>
+        <button type="button" onclick="resetDispatchRangeTo90('/settlement')" class="btn-status bg-gray">초기화(90일)</button>
     </form>
     <script>
     (function(){{
@@ -4325,7 +4455,8 @@ def statistics():
             </table>
             </div>
         </div>"""
-    # 고정기사 운행내역서 표시 열(왼쪽부터): 기사명·차량번호·노선·기사운임·부가세·합계·매입사업자구분·지급일·매입사업자명·매출사업자구분·수금일·매출사업자명·매출처 입금자명·지급통장·지급관련비고 (정렬·검색용으로 오더일/배차일/로그는 data 속성에만 유지)
+    # 고정기사 운행내역서 표시 열(왼쪽부터):
+    # 로그번호/오더일/배차일/기사명/차량번호/노선/기사운임/부가세/합계/지급일/매입사업자명/수금일/매출사업자명/지급통장/지급관련비고
     driver_biz_rows_html = ""
     driver_biz_list = []
     if not df.empty:
@@ -4347,7 +4478,6 @@ def statistics():
             tax_img_val = str(r.get('tax_img') or '').strip()
             tax_ok = '있음' if tax_img_val else '미확인'
             pay_memo_val = _ledger_driver_pay_memo_str(r)
-            biz_issue_raw = str(r.get('biz_issue') or '').strip()
             in_name_val = str(r.get('in_name') or '').strip()
             driver_biz_list.append({
                 '로그번호': str(r.get('id') or '').strip(),
@@ -4359,11 +4489,8 @@ def statistics():
                 '기사운임': fee_out_val,
                 '부가세': vat2_val,
                 '합계': total2_val,
-                '매입사업자구분': str(r.get('tax_biz2') or '').strip(),
                 '지급일': out_dt_val,
                 '매입사업자명': tax_biz_name_val,
-                '매출사업자구분': pay_to_val,
-                'biz_issue_raw': biz_issue_raw,
                 '수금일': in_dt_val,
                 '매출사업자명': client_name_val,
                 '매출처 입금자명': in_name_val,
@@ -4388,24 +4515,23 @@ def statistics():
                 s = str(s).strip()
                 return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
             dispatch_display = (b['배차일'] or '')[:10] if b['배차일'] else ''
-            biz_search_attr = ' '.join(x for x in (b.get('매출사업자구분') or '', b.get('biz_issue_raw') or '') if x).strip()
+            biz_search_attr = pay_to_val
             driver_biz_rows_html += (
                 f"<tr class=\"biz-row\" data-order-dt=\"{_besc(b['오더일'])}\" data-dispatch-dt=\"{_besc(b['배차일'])}\" "
                 f"data-log-id=\"{_besc(b['로그번호'])}\" data-in-name=\"{_besc(b.get('매출처 입금자명') or '')}\" "
                 f"data-d-name=\"{_besc(b['기사명'])}\" data-c-num=\"{_besc(b['차량번호'])}\" data-route=\"{_besc(b['노선'])}\" "
-                f"data-biz-issue=\"{_besc(biz_search_attr)}\" data-tax-biz2=\"{_besc(b.get('매입사업자구분') or '')}\" data-driver-pay-memo=\"{_besc(b.get('지급관련비고') or '')}\" data-client-name=\"{_besc(b['매출사업자명'])}\" data-tax-biz-name=\"{_besc(b['매입사업자명'])}\">"
-                f"<td>{_besc(b['기사명'])}</td><td>{_besc(b['차량번호'])}</td>"
-                f"<td>{_besc(b['노선'])}</td><td style='text-align:right;'>{b['기사운임']:,}</td>"
-                f"<td style='text-align:right;'>{b['부가세']:,}</td><td style='text-align:right;'>{b['합계']:,}</td>"
-                f"<td>{_besc(b['매입사업자구분'])}</td><td>{_besc(b['지급일'])}</td><td>{_besc(b['매입사업자명'])}</td>"
-                f"<td>{_besc(b['매출사업자구분'])}</td><td>{_besc(b['수금일'])}</td><td>{_besc(b['매출사업자명'])}</td><td>{_besc(b.get('매출처 입금자명') or '')}</td><td>{_besc(b['지급통장'])}</td>"
+                f"data-biz-issue=\"{_besc(biz_search_attr)}\" data-tax-biz2=\"\" data-driver-pay-memo=\"{_besc(b.get('지급관련비고') or '')}\" data-client-name=\"{_besc(b['매출사업자명'])}\" data-tax-biz-name=\"{_besc(b['매입사업자명'])}\">"
+                f"<td>{_besc(b['로그번호'])}</td><td>{_besc(b['오더일'])}</td><td>{_besc(dispatch_display)}</td>"
+                f"<td>{_besc(b['기사명'])}</td><td>{_besc(b['차량번호'])}</td><td>{_besc(b['노선'])}</td>"
+                f"<td style='text-align:right;'>{b['기사운임']:,}</td><td style='text-align:right;'>{b['부가세']:,}</td><td style='text-align:right;'>{b['합계']:,}</td>"
+                f"<td>{_besc(b['지급일'])}</td><td>{_besc(b['매입사업자명'])}</td><td>{_besc(b['수금일'])}</td><td>{_besc(b['매출사업자명'])}</td><td>{_besc(b['지급통장'])}</td>"
                 f"<td class=\"biz-memo-cell\"><div class=\"biz-memo-inner\">{_besc(b['지급관련비고'])}</div></td></tr>"
             )
     biz_table_count = len(driver_biz_list)
     biz_sum_운임 = sum(b['기사운임'] for b in driver_biz_list)
     biz_sum_부가세 = sum(b['부가세'] for b in driver_biz_list)
     biz_sum_합계 = sum(b['합계'] for b in driver_biz_list)
-    biz_tfoot_html = f"<tfoot><tr class=\"client-sum-row\"><td colspan=\"3\">총합계액</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_운임:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_부가세:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_합계:,}</td><td colspan=\"9\"></td></tr></tfoot>"
+    biz_tfoot_html = f"<tfoot><tr class=\"client-sum-row\"><td colspan=\"6\">총합계액</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_운임:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_부가세:,}</td><td style=\"text-align:right; font-weight:bold;\">{biz_sum_합계:,}</td><td colspan=\"6\"></td></tr></tfoot>"
     stats_biz_section = f"""
         <div class="section" style="margin-top:28px;">
             <h3>📋 고정기사 운행내역서 <span style="font-size:0.9em; color:#555;">(총 {biz_table_count}건)</span></h3>
@@ -4417,7 +4543,7 @@ def statistics():
             </div>
             <div class="table-scroll stats-transfer-scroll" id="bizSettleZone">
             <table class="client-settle-table" id="statsBizTable">
-                <thead><tr><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임(지급운임)</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>매입사업자구분</th><th>지급일</th><th>매입사업자명</th><th>매출사업자구분</th><th>수금일</th><th>매출사업자명</th><th>매출처 입금자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead>
+                <thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>지급일</th><th>매입사업자명</th><th>수금일</th><th>매출사업자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead>
                 <tbody>{driver_biz_rows_html}</tbody>
                 {biz_tfoot_html}
             </table>
@@ -4429,7 +4555,7 @@ def statistics():
         <div class="section" style="margin-top:28px;">
             <h3>📋 고정기사 운행내역서 <span style="font-size:0.9em; color:#555;">(총 0건)</span></h3>
             <div style="margin-bottom:10px; display:flex; flex-wrap:wrap; gap:10px; align-items:center;"><input type="text" id="bizTableSearch" placeholder="오더일, 배차일, 기사명, 차량번호, 노선, 매입/매출사업자명 등 검색" style="width:320px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px;" disabled><button type="button" id="bizTableSearchBtn" class="btn-save" disabled>검색</button></div>
-            <div class="table-scroll stats-transfer-scroll" id="bizSettleZone"><table class="client-settle-table" id="statsBizTable"><thead><tr><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임(지급운임)</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>매입사업자구분</th><th>지급일</th><th>매입사업자명</th><th>매출사업자구분</th><th>수금일</th><th>매출사업자명</th><th>매출처 입금자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead><tbody></tbody></table></div>
+            <div class="table-scroll stats-transfer-scroll" id="bizSettleZone"><table class="client-settle-table" id="statsBizTable"><thead><tr><th>로그번호</th><th>오더일</th><th>배차일</th><th>기사명</th><th>차량번호</th><th>노선</th><th style="text-align:right;">기사운임</th><th style="text-align:right;">부가세</th><th style="text-align:right;">합계</th><th>지급일</th><th>매입사업자명</th><th>수금일</th><th>매출사업자명</th><th>지급통장</th><th>지급관련비고</th></tr></thead><tbody></tbody></table></div>
             <p style="margin:10px 0 0 0; font-size:12px; color:#64748b;">📐 수식: 기사운임(지급운임)=통합장부 기사운임, 부가세=기사운임×10%(매입처 현금확인 시 0), 합계=기사운임+부가세 · 지급관련비고=통합장부 지급관련비고와 동일(driver_pay_memo)</p>
         </div>"""
 
@@ -4592,6 +4718,7 @@ def statistics():
                 </div>
                 <div class="stats-filter-actions">
                     <button type="submit" class="btn-save">데이터 조회</button>
+                    <button type="button" class="btn-status bg-gray" onclick="resetDispatchRangeTo90('/statistics')">초기화(90일)</button>
                     <button type="button" onclick="location.href='/export_stats'+window.location.search" class="btn-status bg-green">엑셀 다운로드</button>
                 </div>
             </div>
@@ -5088,26 +5215,28 @@ def statistics_biz_settlement_excel():
         filtered.append({
             '_sort_dispatch': dispatch_dt[:10] if dispatch_dt else '',
             '_sort_id': r.get('id', ''),
+            '로그번호': str(r.get('id') or '').strip(),
+            '오더일': (r.get('order_dt') or '')[:10],
+            '배차일': dispatch_dt[:10] if dispatch_dt else '',
             '기사명': str(r.get('d_name', '') or '').strip(),
             '차량번호': str(r.get('c_num', '') or '').strip(),
             '노선': str(r.get('route', '') or '').strip(),
-            '기사운임(지급운임)': int(fee_out) if fee_out is not None else 0,
+            '기사운임': int(fee_out) if fee_out is not None else 0,
             '부가세': int(vat2) if vat2 is not None else 0,
             '합계': int(total2) if total2 is not None else 0,
-            '매입사업자구분': str(r.get('tax_biz2') or '').strip(),
             '지급일': (out_dt or '')[:10] if out_dt else '',
             '매입사업자명': str(r.get('tax_biz_name') or '').strip(),
-            '매출사업자구분': str(r.get('pay_to') or '').strip(),
             '수금일': (in_dt or '')[:10] if in_dt else '',
             '매출사업자명': str(r.get('client_name') or '').strip(),
-            '매출처 입금자명': str(r.get('in_name') or '').strip(),
             '지급통장': str(r.get('pay_bank') or '').strip(),
             '지급관련비고': pay_memo_val,
         })
     excel_cols = [
+        '로그번호', '오더일', '배차일',
         '기사명', '차량번호', '노선',
-        '기사운임(지급운임)', '부가세', '합계', '매입사업자구분', '지급일', '매입사업자명',
-        '매출사업자구분', '수금일', '매출사업자명', '매출처 입금자명', '지급통장', '지급관련비고',
+        '기사운임', '부가세', '합계',
+        '지급일', '매입사업자명', '수금일',
+        '매출사업자명', '지급통장', '지급관련비고',
     ]
     # 통계 화면 고정기사 운행내역서와 동일: 배차일 오름차순(빈값 맨 뒤), 동일일자는 로그번호 오름차순
     def _biz_excel_sort_key(x):
@@ -5122,23 +5251,23 @@ def statistics_biz_settlement_excel():
     filtered.sort(key=_biz_excel_sort_key)
     df = pd.DataFrame([{k: r.get(k) for k in excel_cols} for r in filtered], columns=excel_cols)
     if not df.empty:
-        sum_fee = int(pd.to_numeric(df['기사운임(지급운임)'], errors='coerce').fillna(0).sum())
+        sum_fee = int(pd.to_numeric(df['기사운임'], errors='coerce').fillna(0).sum())
         sum_vat = int(pd.to_numeric(df['부가세'], errors='coerce').fillna(0).sum())
         sum_total = int(pd.to_numeric(df['합계'], errors='coerce').fillna(0).sum())
         df.loc[len(df)] = {
+            '로그번호': '',
+            '오더일': '',
+            '배차일': '',
             '기사명': '',
             '차량번호': '',
             '노선': '총합계액',
-            '기사운임(지급운임)': sum_fee,
+            '기사운임': sum_fee,
             '부가세': sum_vat,
             '합계': sum_total,
-            '매입사업자구분': '',
             '지급일': '',
             '매입사업자명': '',
-            '매출사업자구분': '',
             '수금일': '',
             '매출사업자명': '',
-            '매출처 입금자명': '',
             '지급통장': '',
             '지급관련비고': '',
         }
@@ -5782,7 +5911,7 @@ def export_tax_not_issued():
     conn = connect_ledger(); conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     cols = [
-        '매출처사업자번호', '매출사업자구분', '사업자주소', '업태', '종목', '메일주소', '업체명', '대표자명',
+        '매출처사업자번호', '매출사업자구분', '매입사업자구분', '사업자주소', '업태', '종목', '메일주소', '업체명', '대표자명',
         '공급가액', '매출부가세', '매출합계', '노선', '차량번호/기사명',
     ]
     export_rows = []
@@ -5874,6 +6003,7 @@ def export_tax_not_issued():
             # 업체정보(clients)에서 참조
             '매출처사업자번호': biz_reg_no,
             '매출사업자구분': sales_biz_type,
+            '매입사업자구분': (str(r.get('tax_biz2') or '').strip()),
             '사업자주소': (client.get('사업자주소', '') or r.get('biz_addr', '') or '').strip(),
             '업태': (client.get('업태', '') or '').strip(),
             '종목': (client.get('종목', '') or '').strip(),
@@ -6751,8 +6881,12 @@ def ledger_upload():
     header_to_key = {'id': 'id'}
     for c in FULL_COLUMNS:
         header_to_key[c['n']] = c['k']
-    # 현금확인(tax_biz): 구 명칭 '매출사업자구분' 엑셀 업로드 호환
-    header_to_key['매출사업자구분'] = 'tax_biz'
+    # 매출사업자구분: 정산·장부 화면에서 쓰는 pay_to (홍진/에스엠/스퀘어 체크 + 기타 토큰)
+    # (과거에 '매출사업자구분' 헤더를 tax_biz(현금확인)로 쓰던 구 양식이 있을 수 있으나,
+    #  현재는 '현금확인' 헤더를 tax_biz로 사용하므로 여기서는 pay_to로 고정)
+    header_to_key['매출사업자구분'] = 'pay_to'
+    # 구 양식 호환: 매출사업자구분(개인/법인) 라벨로 업로드된 경우도 pay_to로 처리
+    header_to_key['매출사업자구분(개인/법인)'] = 'pay_to'
     # 매출처/매입처 합산발행: 헤더 띄어쓰기 없이 쓴 경우 업로드 호환
     header_to_key['매출처합산발행'] = 'month_end_client'
     header_to_key['매입처합산발행'] = 'month_end_driver'
