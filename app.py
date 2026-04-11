@@ -333,8 +333,9 @@ def _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
 
 
 def _order_in_settlement_range(order_dt, q_order_start, q_order_end):
-    """정산 화면과 동일: 오더일이 order_start/order_end 범위 안인지."""
-    od = ((order_dt or '')[:10]).strip() if order_dt else ''
+    """정산관리 settlement()와 동일: order_dt 원문(시간 포함 가능)으로 order_start/end와 문자열 비교.
+    [:10]만 비교하면 'YYYY-MM-DD HH:MM' 데이터에서 화면·SQL 결과와 건수가 어긋날 수 있음."""
+    od = (order_dt or '').strip()
     qos = (q_order_start or '').strip()
     qoe = (q_order_end or '').strip()
     if qos and od < qos:
@@ -417,6 +418,8 @@ TAX_BIZ2_TAG_ALIASES = {
     '에스엠': ('에스엠',),
     '스퀘어': ('스퀘어',),
 }
+# 정산·통합장부 SQL·엑셀 다운로드(export_*)·통계: tb2_/sb2_ 체크박스를 여러 개 켠 경우
+# _row_matches_*_tags / _sql_append_* 가 모두 포함(AND)으로 필터한다. (흥진|홍진 같은 태그 내 alias만 OR)
 
 
 def _tax_biz2_tags_from_args(tb2_hj, tb2_sm, tb2_sq):
@@ -455,13 +458,13 @@ def _row_matches_tax_biz2_tags(row, tags):
     v = str(row.get('tax_biz2') or '')
     for t in tags:
         aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
-        if any(a in v for a in aliases):
-            return True
-    return False
+        if not any(a in v for a in aliases):
+            return False
+    return True
 
 
 def _row_matches_tax_biz2_combined(row, tb2_tags, q_tax_biz2_legacy):
-    """체크박스 태그가 있으면 포함(OR) 매칭, 없으면 레거시 부분일치(q_tax_biz2)."""
+    """체크박스 태그가 있으면 모두 포함(AND) 매칭, 없으면 레거시 부분일치(q_tax_biz2)."""
     if tb2_tags:
         return _row_matches_tax_biz2_tags(row, tb2_tags)
     return _row_matches_q_tax_biz2(row, q_tax_biz2_legacy)
@@ -469,7 +472,7 @@ def _row_matches_tax_biz2_combined(row, tb2_tags, q_tax_biz2_legacy):
 
 def _sql_append_tax_biz2(conditions, params, tb2_tags, q_tax_biz2_legacy):
     if tb2_tags:
-        # tag 별 alias(흥진/홍진)까지 OR 처리
+        # 태그별 alias(흥진/홍진)는 OR, 태그들 사이는 AND (체크한 구분을 모두 포함)
         like_parts = []
         for t in tb2_tags:
             aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
@@ -477,7 +480,7 @@ def _sql_append_tax_biz2(conditions, params, tb2_tags, q_tax_biz2_legacy):
             like_parts.append("(" + " OR ".join(sub) + ")")
             for a in aliases:
                 params.append(f"%{a}%")
-        conditions.append("(" + " OR ".join(like_parts) + ")")
+        conditions.append("(" + " AND ".join(like_parts) + ")")
     elif (q_tax_biz2_legacy or '').strip():
         conditions.append("COALESCE(tax_biz2,'') LIKE ?")
         params.append(f"%{(q_tax_biz2_legacy or '').strip()}%")
@@ -499,20 +502,19 @@ def _settlement_tax_biz2_cell_html(rid, tax_biz2_raw):
 
 
 def _sql_append_biz_issue_tags(conditions, params, sb2_tags, q_biz_issue_legacy):
-    """매출사업자구분: 체크박스 태그(OR) 또는 레거시 자유 검색 — pay_to·biz_issue 모두 검색."""
+    """매출사업자구분: 체크박스 태그는 모두 포함(AND, 태그 내 alias는 OR) 또는 레거시 자유 검색 — pay_to·biz_issue 검색."""
     if sb2_tags:
-        # tag 별 alias(흥진/홍진)까지 OR 처리 (pay_to, biz_issue 둘 다)
-        or_parts = []
+        and_parts = []
         for t in sb2_tags:
             aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
             sub = []
             for _a in aliases:
                 sub.append("(COALESCE(pay_to,'') LIKE ? OR COALESCE(biz_issue,'') LIKE ?)")
-            or_parts.append("(" + " OR ".join(sub) + ")")
+            and_parts.append("(" + " OR ".join(sub) + ")")
             for a in aliases:
                 pat = f"%{a}%"
                 params.extend([pat, pat])
-        conditions.append("(" + " OR ".join(or_parts) + ")")
+        conditions.append("(" + " AND ".join(and_parts) + ")")
     else:
         _append_ledger_q_biz_issue_sql(conditions, params, q_biz_issue_legacy)
 
@@ -525,15 +527,28 @@ def _row_matches_biz_issue_tags(row, tags):
     biz_issue = str(row.get('biz_issue') or '')
     for t in tags:
         aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
-        if any((a in pay_to or a in biz_issue) for a in aliases):
-            return True
-    return False
+        if not any((a in pay_to or a in biz_issue) for a in aliases):
+            return False
+    return True
 
 
 def _row_matches_biz_issue_combined(row, sb2_tags, q_biz_issue_legacy):
+    """체크박스 태그가 있으면 pay_to/biz_issue에 모두 포함(AND), 없으면 레거시 자유 검색."""
     if sb2_tags:
         return _row_matches_biz_issue_tags(row, sb2_tags)
     return _row_matches_q_biz_issue(row, q_biz_issue_legacy)
+
+
+def _row_matches_sb2_pay_to_tokens(row, sb2_tags):
+    """정산 매출사업자구분 체크박스(sb2_*): UI와 동일하게 pay_to만 쉼표 토큰으로 판별(SQL LIKE+biz_issue 부분일치로 인한 누수 방지)."""
+    if not sb2_tags:
+        return True
+    row = dict(row) if hasattr(row, 'keys') else row
+    picked = set(_tax_biz2_parse_stored(row.get('pay_to')))
+    for t in sb2_tags:
+        if t not in picked:
+            return False
+    return True
 
 
 def _settlement_pay_to_cell_html(rid, pay_to_raw):
@@ -2706,7 +2721,6 @@ def index():
 @app.route('/settlement')
 @login_required 
 def settlement():
-    conn = connect_ledger(); conn.row_factory = sqlite3.Row
     # 쿼리 파라미터는 항상 문자열로 취급 (숫자 1개만 입력해도 오류 없음)
     def _arg_str(key, default=''):
         return str(request.args.get(key) or default).strip()
@@ -2747,171 +2761,9 @@ def settlement():
     q_in_dt_end = _arg_str('in_dt_end')
     q_out_dt_start = _arg_str('out_dt_start')
     q_out_dt_end = _arg_str('out_dt_end')
-    query = "SELECT * FROM ledger"
-    params = []
-    conditions = []
-    if q_start:
-        conditions.append("dispatch_dt IS NOT NULL AND dispatch_dt != '' AND substr(dispatch_dt,1,10) >= ?")
-        params.append(q_start)
-    if q_end:
-        conditions.append("dispatch_dt IS NOT NULL AND dispatch_dt != '' AND substr(dispatch_dt,1,10) <= ?")
-        params.append(q_end)
-    if q_order_start:
-        conditions.append("order_dt >= ?")
-        params.append(q_order_start)
-    if q_order_end:
-        conditions.append("order_dt <= ?")
-        params.append(q_order_end)
-    if q_in_dt_start:
-        conditions.append("in_dt IS NOT NULL AND TRIM(COALESCE(in_dt,'')) != '' AND substr(in_dt,1,10) >= ?")
-        params.append(q_in_dt_start)
-    if q_in_dt_end:
-        conditions.append("in_dt IS NOT NULL AND TRIM(COALESCE(in_dt,'')) != '' AND substr(in_dt,1,10) <= ?")
-        params.append(q_in_dt_end)
-    if q_out_dt_start:
-        conditions.append("out_dt IS NOT NULL AND TRIM(COALESCE(out_dt,'')) != '' AND substr(out_dt,1,10) >= ?")
-        params.append(q_out_dt_start)
-    if q_out_dt_end:
-        conditions.append("out_dt IS NOT NULL AND TRIM(COALESCE(out_dt,'')) != '' AND substr(out_dt,1,10) <= ?")
-        params.append(q_out_dt_end)
-    if q_name:
-        name_part = q_name
-        add_id_condition = False
-        id_val = None
-        # n01, n02 형식 또는 숫자만(01, 02, 12 등) 입력 시 id 조건 추가
-        if name_part.lower().startswith('n'):
-            num_str = name_part[1:].lstrip('0') or '0'
-            if num_str.isdigit():
-                try:
-                    id_val = int(num_str)
-                    add_id_condition = True
-                except (ValueError, TypeError):
-                    pass
-        elif name_part.isdigit():
-            try:
-                id_val = int(name_part)
-                add_id_condition = True
-            except (ValueError, TypeError):
-                pass
-        like_part = "(client_name LIKE ? OR tax_biz_name LIKE ? OR d_name LIKE ?)"
-        like_params = [f"%{name_part}%", f"%{name_part}%", f"%{name_part}%"]
-        if add_id_condition and id_val is not None:
-            conditions.append("(" + like_part + " OR id = ?)")
-            params.extend(like_params + [id_val])
-        else:
-            conditions.append(like_part)
-            params.extend(like_params)
-    if q_c_num:
-        conditions.append("COALESCE(c_num,'') LIKE ?")
-        params.append(f"%{q_c_num}%")
-    if q_vendor:
-        conditions.append("COALESCE(tax_biz_name,'') LIKE ?")
-        params.append(f"%{q_vendor}%")
-    _sql_append_tax_biz2(conditions, params, q_tb2_tags, '' if q_tb2_tags else q_tax_biz2)
-    _sql_append_biz_issue_tags(conditions, params, q_sb2_tags, '' if q_sb2_tags else q_biz_issue)
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
-    query += " ORDER BY CASE WHEN dispatch_dt IS NULL OR dispatch_dt = '' THEN 1 ELSE 0 END, dispatch_dt DESC, id DESC"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
 
-    filtered_rows = []
+    filtered_rows = _settlement_filtered_rows_from_request(request)
     today = now_kst()
-    today_naive = today.replace(tzinfo=None)  # naive용 비교 (DB 날짜는 timezone 없음)
-    
-    for row in rows:
-        r = dict(row)  # KeyError 방지: 구 스키마에 없는 컬럼은 .get()으로 접근
-        in_dt = r.get('in_dt'); out_dt = r.get('out_dt'); dispatch_dt_str = r.get('dispatch_dt')
-        order_dt = r.get('order_dt') or ""
-        
-        # 1. 수금상태 판별 (화면·엑셀·상태 필터 공통)
-        misu_status, misu_color = _misu_status_for_settlement_row(r, today_naive)
-
-        # 2. 지급 상태 판별: 익월말·조건 기준(_pay_status_from_row)
-        pay_status = _pay_status_from_row(r)
-        if pay_status == "지급완료":
-            pay_color = "bg-green"
-        elif pay_status == "미지급":
-            pay_color = "bg-red"
-        else:
-            pay_color = "bg-blue"
-
-        # 3. 검색 필터 적용 (날짜/이름/상태 통합 필터)
-        # 배차일 기간 필터 (SQL에서 이미 적용됐을 수 있으나, Python에서 재필터)
-        dispatch_dt_val = (dispatch_dt_str or '')[:10] if dispatch_dt_str else ''
-        if q_start and dispatch_dt_val and dispatch_dt_val < q_start: continue
-        if q_end and dispatch_dt_val and dispatch_dt_val > q_end: continue
-        # 오더일 추가 검색
-        if q_order_start and order_dt < q_order_start: continue
-        if q_order_end and order_dt > q_order_end: continue
-        if not _ledger_yyyymmdd_in_range(in_dt, q_in_dt_start, q_in_dt_end):
-            continue
-        if not _ledger_yyyymmdd_in_range(out_dt, q_out_dt_start, q_out_dt_end):
-            continue
-        
-        # 이름 필터 (매입처/매출처명·업체/기사명 + 오더고유번호 n01, n02 또는 숫자만 01, 12 등)
-        if q_name:
-            q = q_name.lower()
-            in_client = q in str(r.get('client_name') or '').lower()
-            in_vendor = q in str(r.get('tax_biz_name') or '').lower()
-            in_driver = q in str(r.get('d_name') or '').lower()
-            order_no = ('n' + str(r.get('id')).zfill(2)).lower()
-            match_order = (q == order_no or q in order_no or order_no in q)
-            match_id = False
-            if q.isdigit():
-                try:
-                    match_id = (r.get('id') == int(q))
-                except (ValueError, TypeError):
-                    pass
-            if not (in_client or in_vendor or in_driver or match_order or match_id):
-                continue
-
-        # 차량번호 전용 필터
-        if q_c_num and q_c_num.lower() not in str(r.get('c_num') or '').lower():
-            continue
-
-        # 매입처명 전용 필터
-        if q_vendor and q_vendor.lower() not in str(r.get('tax_biz_name') or '').lower():
-            continue
-
-        # 업체현금/기사현금 필터 (현금확인=현금, 발행=이체)
-        if q_filter_pay_client == '1' and (str(r.get('pay_method_client') or '').strip() != '현금'): continue
-        if q_filter_pay_client == '0' and (str(r.get('pay_method_client') or '').strip() == '현금'): continue
-        if q_filter_pay_driver == '1' and (str(r.get('pay_method_driver') or '').strip() != '현금'): continue
-        if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
-
-        if not _row_matches_month_end_ledger_filters(r, q_month_client, q_month_driver, q_not_month_end_client, q_not_month_end_driver):
-            continue
-
-        # 금액·매출처·입금자명·전화번호 별도 검색
-        if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone):
-            continue
-
-        # 매출처 계산서·공급자계산서 발행 여부 (필터용)
-        _tax_dt_val = (r.get('tax_dt') or '').strip() if r.get('tax_dt') else ''
-        _tax_ok = bool(_tax_dt_val) or _norm_tax_chk(r.get('tax_chk'))
-        _issue_dt_val = (r.get('issue_dt') or '').strip() if r.get('issue_dt') else ''
-        _issue_ok = bool(_issue_dt_val)
-
-        # 상태 필터
-        if q_status:
-            if q_status == 'misu_all' and in_dt: continue
-            if q_status == 'pay_all' and out_dt: continue
-            if q_status == 'misu_only' and misu_status != '미수': continue
-            if q_status == 'cond_misu' and misu_status != '조건부미수금': continue
-            if q_status == 'pay_only' and pay_status != '미지급': continue
-            if q_status == 'cond_pay' and pay_status != '조건부미지급': continue
-            if q_status == 'done_in' and not in_dt: continue
-            if q_status == 'done_out' and not out_dt: continue
-            if q_status == 'tax_issued' and not _tax_ok: continue   # 매출처계산서 발급확인
-            if q_status == 'tax_not_issued' and _tax_ok: continue   # 매출처계산서 미발행
-            if q_status == 'issue_done' and not _issue_ok: continue # 공급자계산서발행일 확인완료
-            if q_status == 'issue_not_done' and _issue_ok: continue # 공급자계산서발행일 미발행
-
-        row_data = r
-        row_data['m_st'] = misu_status; row_data['m_cl'] = misu_color
-        row_data['p_st'] = pay_status; row_data['p_cl'] = pay_color
-        filtered_rows.append(row_data)
 
     total_pages = max(1, (len(filtered_rows) + per_page - 1) // per_page)
     page = min(max(1, page), total_pages)
@@ -3251,11 +3103,26 @@ def settlement():
     }})();
     </script>
     <div style="margin: 15px 0;">
-        <a href="/export_misu_info?{urlencode(_settlement_export_params)}" class="btn-status bg-red" style="text-decoration:none;">미수금 업체정보 엑셀</a>
-        <a href="/export_pay_info?{urlencode(_settlement_export_params)}" class="btn-status bg-orange" style="text-decoration:none; margin-left:5px;">미지급 기사정보 엑셀</a>
-        <a href="/export_tax_not_issued?{urlencode(_settlement_export_params)}" class="btn-status bg-gray" style="text-decoration:none; margin-left:5px;">세금계산서 미발행 엑셀</a>
-        <a href="/export_settlement_excel?{urlencode(_settlement_export_params)}" class="btn-status bg-blue" style="text-decoration:none; margin-left:5px;">정산관리 검색결과 엑셀</a>
+        <a href="/export_misu_info?{urlencode(_settlement_export_params)}" class="btn-status bg-red settlement-export-link" data-export-base="/export_misu_info" style="text-decoration:none;">미수금 업체정보 엑셀</a>
+        <a href="/export_pay_info?{urlencode(_settlement_export_params)}" class="btn-status bg-orange settlement-export-link" data-export-base="/export_pay_info" style="text-decoration:none; margin-left:5px;">미지급 기사정보 엑셀</a>
+        <a href="/export_tax_not_issued?{urlencode(_settlement_export_params)}" class="btn-status bg-gray settlement-export-link" data-export-base="/export_tax_not_issued" style="text-decoration:none; margin-left:5px;">세금계산서 미발행 엑셀</a>
+        <a href="/export_settlement_excel?{urlencode(_settlement_export_params)}" class="btn-status bg-blue settlement-export-link" data-export-base="/export_settlement_excel" style="text-decoration:none; margin-left:5px;">정산관리 검색결과 엑셀</a>
     </div>
+    <script>
+    (function(){{
+      var form = document.querySelector('.page-settlement form.filter-box');
+      if (!form) return;
+      document.querySelectorAll('a.settlement-export-link').forEach(function(a){{
+        a.addEventListener('click', function(e){{
+          e.preventDefault();
+          var base = a.getAttribute('data-export-base');
+          if (!base) return;
+          var qs = new URLSearchParams(new FormData(form)).toString();
+          window.location.href = base + (qs ? '?' + qs : '');
+        }});
+      }});
+    }})();
+    </script>
     {settlement_totals_html}
     <div class="scroll-sticky-wrap">
     <div class="scroll-top" id="settlementScrollTop">
@@ -3557,15 +3424,13 @@ def settlement():
     return render_template_string(BASE_HTML, content_body=content, drivers_json=json.dumps(drivers_db), clients_json=json.dumps(clients_db), col_keys="[]")
 
 
-@app.route('/export_settlement_excel')
-@login_required
-def export_settlement_excel():
+def _settlement_filtered_rows_from_request(req):
+    """정산관리 settlement()·export_settlement_excel·export_tax_not_issued 공통 GET 쿼리·SQL·Python 필터로 행 목록 반환."""
     conn = connect_ledger()
     conn.row_factory = sqlite3.Row
 
-    # 쿼리 파라미터는 항상 문자열로 취급 (숫자 1개만 입력해도 오류 없음)
     def _arg_str(key, default=''):
-        return str(request.args.get(key) or default).strip()
+        return str(req.args.get(key) or default).strip()
 
     q_status = _arg_str('status')
     q_name = _arg_str('name')
@@ -3600,10 +3465,6 @@ def export_settlement_excel():
     q_in_dt_end = _arg_str('in_dt_end')
     q_out_dt_start = _arg_str('out_dt_start')
     q_out_dt_end = _arg_str('out_dt_end')
-
-    def _chk_01(v):
-        s = str(v or '').strip()
-        return 1 if s in ('1', 'Y', '✅') else 0
 
     # 성능: 날짜/이름 필터를 SQL로 적용 (정산 화면과 동일하게 배차일=start/end 기준)
     query = "SELECT * FROM ledger"
@@ -3734,6 +3595,10 @@ def export_settlement_excel():
         if q_vendor and q_vendor.lower() not in str(r.get('tax_biz_name') or '').lower():
             continue
 
+        # 매출사업자구분 체크(흥진/에스엠/스퀘어): SQL은 biz_issue 부분일치까지 포함할 수 있어 pay_to 토큰으로 UI와 동일하게 재확인
+        if q_sb2_tags and not _row_matches_sb2_pay_to_tokens(r, q_sb2_tags):
+            continue
+
         # 업체현금/기사현금 필터 (현금확인=현금, 발행=이체)
         if q_filter_pay_client == '1' and (str(r.get('pay_method_client') or '').strip() != '현금'):
             continue
@@ -3788,6 +3653,19 @@ def export_settlement_excel():
         row_data['m_st'] = misu_status; row_data['m_cl'] = misu_color
         row_data['p_st'] = pay_status; row_data['p_cl'] = pay_color
         filtered_rows.append(row_data)
+
+    return filtered_rows
+
+
+@app.route('/export_settlement_excel')
+@login_required
+def export_settlement_excel():
+    """정산관리 조회와 동일 필터·동일 건수. 매입/매출 사업자구분 체크를 여러 개 선택한 경우 AND(저장 문자열에 태그가 모두 포함)."""
+    filtered_rows = _settlement_filtered_rows_from_request(request)
+
+    def _chk_01(v):
+        s = str(v or '').strip()
+        return 1 if s in ('1', 'Y', '✅') else 0
 
     # 엑셀 컬럼(정산 화면 테이블 헤더 순서를 기준으로 구성)
     export_cols = [
@@ -3916,7 +3794,7 @@ def statistics():
 
     for row in rows:
         r = dict(row)
-        order_dt = (r.get('order_dt', '') or "")[:10]  # YYYY-MM-DD만 사용 (업로드·DB 혼용 대응)
+        order_dt = r.get('order_dt') or ""
         dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -5139,7 +5017,7 @@ def statistics():
 @app.route('/api/statistics_biz_settlement_excel')
 @login_required
 def statistics_biz_settlement_excel():
-    """통계 고정기사 운행내역서 엑셀: 화면 테이블과 동일 컬럼·순서(기사명~지급관련비고) + 하단 총합계액."""
+    """통계 고정기사 운행내역서 엑셀: 화면 테이블과 동일 컬럼·순서(기사명~지급관련비고) + 하단 총합계액. 매입/매출 사업자구분 체크 다중 선택 시 AND."""
     q_start = request.args.get('start', '').strip()
     q_end = request.args.get('end', '').strip()
     q_client = request.args.get('client', '').strip()
@@ -5181,7 +5059,7 @@ def statistics_biz_settlement_excel():
     filtered = []
     for row in rows:
         r = dict(row)
-        order_dt = (r.get('order_dt') or '')[:10]
+        order_dt = r.get('order_dt') or ''
         dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -5402,7 +5280,7 @@ def export_custom_settlement():
 @app.route('/export_settlement_sheet')
 @login_required
 def export_settlement_sheet():
-    """통계 매출처 합산발행 정산서와 동일 조건·동일 컬럼순: 매출처명/오더일/배차일/기사명/차량번호/노선/공급가액/부가세/합계/매출사업자구분(개인/법인) + 총합계액 행. 동일 쿼리 파라미터 사용."""
+    """통계 매출처 합산발행 정산서와 동일 조건·동일 컬럼순: 매출처명/오더일/배차일/기사명/차량번호/노선/공급가액/부가세/합계/매출사업자구분(개인/법인) + 총합계액 행. 동일 쿼리 파라미터 사용. 매입/매출 사업자구분 체크 다중 선택 시 AND."""
     q_start = request.args.get('start', '').strip()
     q_end = request.args.get('end', '').strip()
     q_order_start = request.args.get('order_start', '').strip()
@@ -5443,7 +5321,7 @@ def export_settlement_sheet():
     filtered = []
     for row in rows:
         r = dict(row)
-        order_dt = (r.get('order_dt') or '')[:10]
+        order_dt = r.get('order_dt') or ''
         dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -5531,7 +5409,7 @@ def export_settlement_sheet():
 @app.route('/export_vendor_sheet')
 @login_required
 def export_vendor_sheet():
-    """통계 매입처 합산발행 엑셀: 로그번호/매입처사업자명/오더일/배차일/기사명/차량번호/노선/공급가액/부가세/합계/매입사업자구분 + 하단 총합계액."""
+    """통계 매입처 합산발행 엑셀: 로그번호/매입처사업자명/오더일/배차일/기사명/차량번호/노선/공급가액/부가세/합계/매입사업자구분 + 하단 총합계액. 매입/매출 사업자구분 체크 다중 선택 시 AND."""
     q_start = request.args.get('start', '').strip()
     q_end = request.args.get('end', '').strip()
     q_order_start = request.args.get('order_start', '').strip()
@@ -5572,7 +5450,7 @@ def export_vendor_sheet():
     filtered = []
     for row in rows:
         r = dict(row)
-        order_dt = (r.get('order_dt') or '')[:10]
+        order_dt = r.get('order_dt') or ''
         dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -5657,7 +5535,7 @@ def export_vendor_sheet():
 @app.route('/export_fixed_driver_sheet')
 @login_required
 def export_fixed_driver_sheet():
-    """통계 고정기사 합산발행 엑셀: 로그번호/구분(개별/고정/협력사)/기사명/오더일/배차일/차량번호/노선/지급운임/매입부가세/합계/매입발행사업자구분 + 하단 합계금액."""
+    """통계 고정기사 합산발행 엑셀: 로그번호/구분(개별/고정/협력사)/기사명/오더일/배차일/차량번호/노선/지급운임/매입부가세/합계/매입발행사업자구분 + 하단 합계금액. 매입/매출 사업자구분 체크 다중 선택 시 AND."""
     q_start = request.args.get('start', '').strip()
     q_end = request.args.get('end', '').strip()
     q_order_start = request.args.get('order_start', '').strip()
@@ -5700,7 +5578,7 @@ def export_fixed_driver_sheet():
         r = dict(row)
         c_num = str(r.get('c_num', '')).strip()
         if c_num not in fixed_c_nums: continue
-        order_dt = (r.get('order_dt') or '')[:10]
+        order_dt = r.get('order_dt') or ''
         dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -5812,6 +5690,7 @@ def export_fixed_driver_sheet():
 @app.route('/export_misu_info')
 @login_required 
 def export_misu_info():
+    """미수금 업체정보 엑셀. 정산 검색과 동일; 매입/매출 사업자구분 체크 다중 선택 시 AND."""
     q_st = request.args.get('status', ''); q_name = request.args.get('name', '')
     q_c_num = request.args.get('c_num', '').strip()
     q_start = request.args.get('start', '').strip(); q_end = request.args.get('end', '').strip()
@@ -5843,7 +5722,7 @@ def export_misu_info():
     export_data = []
     for row in rows:
         row_dict = dict(row)
-        order_dt = (row_dict.get('order_dt') or '')[:10]
+        order_dt = row_dict.get('order_dt') or ''
         dispatch_dt_val = (row_dict.get('dispatch_dt') or '')[:10] if row_dict.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -5910,111 +5789,16 @@ def export_misu_info():
 @app.route('/export_tax_not_issued')
 @login_required
 def export_tax_not_issued():
-    """정산관리 - 매출 세금계산서 형식 엑셀(정산 검색조건 동일). 상태=미발행일 때만 미발행 건, 전체·발급확인 등은 화면과 동일하게 포함."""
-    q_status = str(request.args.get('status') or '').strip()
-    q_name = request.args.get('name', '')
-    q_c_num = request.args.get('c_num', '').strip()
-    q_start = request.args.get('start', '').strip(); q_end = request.args.get('end', '').strip()
-    q_order_start = request.args.get('order_start', '').strip(); q_order_end = request.args.get('order_end', '').strip()
-    q_in_dt_start = request.args.get('in_dt_start', '').strip()
-    q_in_dt_end = request.args.get('in_dt_end', '').strip()
-    q_out_dt_start = request.args.get('out_dt_start', '').strip()
-    q_out_dt_end = request.args.get('out_dt_end', '').strip()
-    q_vendor = request.args.get('vendor', '').strip()
-    q_tax_biz2 = request.args.get('q_tax_biz2', '').strip(); q_biz_issue = request.args.get('q_biz_issue', '').strip()
-    q_tb2_tags = _tax_biz2_tags_from_args(
-        request.args.get('tb2_hj'), request.args.get('tb2_sm'), request.args.get('tb2_sq'),
-    )
-    q_sb2_tags = _tax_biz2_tags_from_args(
-        request.args.get('sb2_hj'), request.args.get('sb2_sm'), request.args.get('sb2_sq'),
-    )
-    q_amount = request.args.get('q_amount', '').strip(); q_client = request.args.get('q_client', '').strip()
-    q_in_name = request.args.get('q_in_name', '').strip(); q_phone = request.args.get('q_phone', '').strip()
-    q_mc = str(request.args.get('month_end_client') or '').strip()
-    q_md = str(request.args.get('month_end_driver') or '').strip()
-    q_nmc = str(request.args.get('not_month_end_client') or '').strip()
-    q_nmd = str(request.args.get('not_month_end_driver') or '').strip()
-    q_filter_pay_client = str(request.args.get('filter_pay_client') or '').strip()
-    q_filter_pay_driver = str(request.args.get('filter_pay_driver') or '').strip()
+    """매출 세금계산서 형식 엑셀. 행·건수·순서는 정산관리 검색결과와 동일(_settlement_filtered_rows_from_request, 배차일↓·id↓).
+    마지막 행만 총합계(데이터 행 수 = 화면 '총 N건')."""
+    filtered_rows = _settlement_filtered_rows_from_request(request)
     client_by_name = {str(c.get('업체명') or '').strip(): c for c in clients_db if (c.get('업체명') or '').strip()}
-    today_naive = now_kst().replace(tzinfo=None)
-    conn = connect_ledger(); conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM ledger").fetchall(); conn.close()
     cols = [
         '매출처사업자번호', '매출사업자구분', '매입사업자구분', '사업자주소', '업태', '종목', '메일주소', '업체명', '대표자명',
         '공급가액', '매출부가세', '매출합계', '노선', '차량번호/기사명',
     ]
     export_rows = []
-    for row in rows:
-        r = dict(row)
-        in_dt = r.get('in_dt')
-        out_dt = r.get('out_dt')
-        misu_status, _ = _misu_status_for_settlement_row(r, today_naive)
-        pay_status = _pay_status_from_row(r)
-        order_dt = (r.get('order_dt') or '')[:10]
-        dispatch_dt_val = (r.get('dispatch_dt') or '')[:10] if r.get('dispatch_dt') else ''
-        if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
-            continue
-        if not _order_in_settlement_range(order_dt, q_order_start, q_order_end):
-            continue
-        if not _ledger_yyyymmdd_in_range(r.get('in_dt'), q_in_dt_start, q_in_dt_end):
-            continue
-        if not _ledger_yyyymmdd_in_range(r.get('out_dt'), q_out_dt_start, q_out_dt_end):
-            continue
-        if q_vendor and q_vendor.lower() not in str(r.get('tax_biz_name') or '').lower(): continue
-        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
-        if q_c_num and q_c_num.lower() not in str(r.get('c_num') or '').lower(): continue
-        if q_filter_pay_client == '1' and (str(r.get('pay_method_client') or '').strip() != '현금'): continue
-        if q_filter_pay_client == '0' and (str(r.get('pay_method_client') or '').strip() == '현금'): continue
-        if q_filter_pay_driver == '1' and (str(r.get('pay_method_driver') or '').strip() != '현금'): continue
-        if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
-        if not _row_matches_biz_issue_combined(r, q_sb2_tags, q_biz_issue): continue
-        if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
-        if not _row_matches_month_end_ledger_filters(r, q_mc, q_md, q_nmc, q_nmd): continue
-        if q_name:
-            qn = q_name.lower()
-            in_client = qn in str(r.get('client_name') or '').lower()
-            in_vendor = qn in str(r.get('tax_biz_name') or '').lower()
-            in_driver = qn in str(r.get('d_name') or '').lower()
-            order_no = ('n' + str(r.get('id')).zfill(2)).lower()
-            match_order = (qn == order_no or qn in order_no or order_no in qn)
-            match_id = False
-            if qn.isdigit():
-                try:
-                    match_id = (r.get('id') == int(qn))
-                except (ValueError, TypeError):
-                    pass
-            if not (in_client or in_vendor or in_driver or match_order or match_id):
-                continue
-        _tax_dt_val = (r.get('tax_dt') or '').strip() if r.get('tax_dt') else ''
-        _tax_ok = bool(_tax_dt_val) or _norm_tax_chk(r.get('tax_chk'))
-        _issue_dt_val = (r.get('issue_dt') or '').strip() if r.get('issue_dt') else ''
-        _issue_ok = bool(_issue_dt_val)
-        if q_status:
-            if q_status == 'misu_all' and in_dt:
-                continue
-            if q_status == 'pay_all' and out_dt:
-                continue
-            if q_status == 'misu_only' and misu_status != '미수':
-                continue
-            if q_status == 'cond_misu' and misu_status != '조건부미수금':
-                continue
-            if q_status == 'pay_only' and pay_status != '미지급':
-                continue
-            if q_status == 'cond_pay' and pay_status != '조건부미지급':
-                continue
-            if q_status == 'done_in' and not in_dt:
-                continue
-            if q_status == 'done_out' and not out_dt:
-                continue
-            if q_status == 'tax_issued' and not _tax_ok:
-                continue
-            if q_status == 'tax_not_issued' and _tax_ok:
-                continue
-            if q_status == 'issue_done' and not _issue_ok:
-                continue
-            if q_status == 'issue_not_done' and _issue_ok:
-                continue
+    for r in filtered_rows:
         fee, vat1, total1, _, _, _ = calc_totals_with_vat(r)
         cname = str(r.get('client_name') or '').strip()
         client = client_by_name.get(cname, {})
@@ -6025,12 +5809,10 @@ def export_tax_not_issued():
         else:
             # 사업자번호 표기 하이픈 제거 (예: 123-45-67890 -> 1234567890)
             biz_reg_no = biz_reg_no.replace('-', '')
-        # 정산관리 화면 기준(통합장부 pay_to)을 우선 사용. 과거 데이터(biz_issue) 및 업체관리 값은 보조.
+        # 검색/화면과 동일: 장부 pay_to·biz_issue만 사용(업체관리 사업자구분 폴백은 미매칭 행이 에스엠처럼 보이는 원인)
         sales_biz_type = (str(r.get('pay_to') or '').strip()
-                          or str(r.get('biz_issue') or '').strip()
-                          or str(client.get('사업자구분') or '').strip())
+                          or str(r.get('biz_issue') or '').strip())
         row_data = {
-            # 업체정보(clients)에서 참조
             '매출처사업자번호': biz_reg_no,
             '매출사업자구분': sales_biz_type,
             '매입사업자구분': (str(r.get('tax_biz2') or '').strip()),
@@ -6039,10 +5821,8 @@ def export_tax_not_issued():
             '종목': (client.get('종목', '') or '').strip(),
             '메일주소': (client.get('메일주소', '') or r.get('mail', '') or '').strip(),
             '업체명': cname or r.get('client_name', ''),
-            # 통합장부(ledger) 대표자명(biz_owner) 우선, 없으면 업체관리 대표자명
             '대표자명': (str(r.get('biz_owner') or '').strip()
                          or str(client.get('대표자명') or '').strip()),
-            # 통합장부(ledger)에서 참조
             '공급가액': fee,
             '매출부가세': vat1,
             '매출합계': total1,
@@ -6050,22 +5830,16 @@ def export_tax_not_issued():
             '차량번호/기사명': ' '.join(
                 x for x in [str(r.get('c_num') or '').strip(), str(r.get('d_name') or '').strip()] if x
             ),
-            '_sort_dispatch': dispatch_dt_val,
         }
         export_rows.append(row_data)
     excel_rows = []
     if export_rows:
-        df_main = pd.DataFrame(export_rows)
-        # cols 기준 누락 열 보정(구 DB·예외 케이스에서 KeyError 방지)
-        for c in cols:
-            if c not in df_main.columns:
-                df_main[c] = ''
-        df_main = df_main.sort_values(by=['업체명', '_sort_dispatch', '노선', '공급가액'], ascending=[True, False, True, True], na_position='last')
-        for _, row in df_main.iterrows():
-            excel_rows.append({c: row.get(c, '') for c in cols})
-        sum_fee = int(df_main['공급가액'].sum())
-        sum_vat = int(df_main['매출부가세'].sum())
-        sum_total = int(df_main['매출합계'].sum())
+        # 정산 테이블과 동일 순서(filtered_rows = SQL ORDER BY 배차일 DESC, id DESC). 업체명 재정렬 금지.
+        for er in export_rows:
+            excel_rows.append({c: er.get(c, '') for c in cols})
+        sum_fee = int(sum(er['공급가액'] for er in export_rows))
+        sum_vat = int(sum(er['매출부가세'] for er in export_rows))
+        sum_total = int(sum(er['매출합계'] for er in export_rows))
         excel_rows.append({c: ('총합계' if c == '업체명' else sum_fee if c == '공급가액' else sum_vat if c == '매출부가세' else sum_total if c == '매출합계' else '') for c in cols})
     df_out = pd.DataFrame(excel_rows if excel_rows else [{}], columns=cols)
     out = io.BytesIO()
@@ -6077,6 +5851,7 @@ def export_tax_not_issued():
 @app.route('/export_pay_info')
 @login_required 
 def export_pay_info():
+    """미지급 기사정보 엑셀. 정산 검색과 동일; 매입/매출 사업자구분 체크 다중 선택 시 AND."""
     q_st = request.args.get('status', ''); q_name = request.args.get('name', '')
     q_c_num = request.args.get('c_num', '').strip()
     q_start = request.args.get('start', '').strip(); q_end = request.args.get('end', '').strip()
@@ -6122,7 +5897,7 @@ def export_pay_info():
     raw_list = []
     for row in rows:
         row_dict = dict(row)
-        order_dt = (row_dict.get('order_dt') or '')[:10]
+        order_dt = row_dict.get('order_dt') or ''
         dispatch_dt_val = (row_dict.get('dispatch_dt') or '')[:10] if row_dict.get('dispatch_dt') else ''
         if not _dispatch_in_settlement_range(dispatch_dt_val, q_start, q_end):
             continue
@@ -6227,6 +6002,7 @@ def export_pay_info():
 @app.route('/export_stats')
 @login_required 
 def export_stats():
+    """통계 엑셀. 매입/매출 사업자구분 체크 다중 선택 시 AND(통계 화면과 동일)."""
     s = request.args.get('start',''); e = request.args.get('end','')
     c = request.args.get('client',''); v = request.args.get('vendor','').strip(); d = request.args.get('driver','')
     c_num_param = request.args.get('c_num', '').strip()
