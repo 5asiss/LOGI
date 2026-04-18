@@ -470,6 +470,19 @@ def _row_matches_tax_biz2_combined(row, tb2_tags, q_tax_biz2_legacy):
     return _row_matches_q_tax_biz2(row, q_tax_biz2_legacy)
 
 
+def _row_matches_tax_biz2_combined_any(row, tb2_tags, q_tax_biz2_legacy):
+    """통계용: 체크박스 태그가 있으면 tax_biz2에 하나라도 포함(OR), 없으면 레거시 부분일치(q_tax_biz2)."""
+    if tb2_tags:
+        row = dict(row) if hasattr(row, 'keys') else row
+        v = str(row.get('tax_biz2') or '')
+        for t in tb2_tags:
+            aliases = TAX_BIZ2_TAG_ALIASES.get(t, (t,))
+            if any(a in v for a in aliases):
+                return True
+        return False
+    return _row_matches_q_tax_biz2(row, q_tax_biz2_legacy)
+
+
 def _sql_append_tax_biz2(conditions, params, tb2_tags, q_tax_biz2_legacy):
     if tb2_tags:
         # 태그별 alias(흥진/홍진)는 OR, 태그들 사이는 AND (체크한 구분을 모두 포함)
@@ -3893,7 +3906,7 @@ def _statistics_filtered_rows_from_request(req):
         if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
         if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
         if not _row_matches_biz_issue_combined_any(r, q_sb2_tags, q_biz_issue): continue
-        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
+        if not _row_matches_tax_biz2_combined_any(r, q_tb2_tags, q_tax_biz2): continue
 
         in_dt = r.get('in_dt')
         out_dt = r.get('out_dt')
@@ -5227,7 +5240,7 @@ def statistics_biz_settlement_excel():
         if q_filter_pay_driver == '0' and (str(r.get('pay_method_driver') or '').strip() == '현금'): continue
         if not _row_matches_extra_filters(r, q_amount, q_client, q_in_name, q_phone): continue
         if not _row_matches_biz_issue_combined_any(r, q_sb2_tags, q_biz_issue): continue
-        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
+        if not _row_matches_tax_biz2_combined_any(r, q_tb2_tags, q_tax_biz2): continue
         in_dt = r.get('in_dt')
         out_dt = r.get('out_dt')
         if q_in_start or q_in_end:
@@ -5939,7 +5952,7 @@ def export_stats():
         if d and d not in str(r['d_name']): continue
         if c_num_param and c_num_param not in str(r.get('c_num', '')): continue
         if not _row_matches_biz_issue_combined_any(r, q_sb2_tags, q_biz_issue): continue
-        if not _row_matches_tax_biz2_combined(r, q_tb2_tags, q_tax_biz2): continue
+        if not _row_matches_tax_biz2_combined_any(r, q_tb2_tags, q_tax_biz2): continue
         if month_client and (str(r.get('month_end_client') or '').strip() not in ('1', 'Y')): continue
         if month_driver and (str(r.get('month_end_driver') or '').strip() not in ('1', 'Y')): continue
         if st:
