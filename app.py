@@ -276,8 +276,8 @@ def _misu_status_rules_from_row(r, today_naive):
     pre_post = r.get('pre_post')
     dispatch_dt_str = r.get('dispatch_dt')
     pre_post_chk_checked = str(r.get('pre_post_chk') or '').strip() in ('1', 'Y', '✅')
-    force_misu_client_cash = str(r.get('pay_method_client') or '').strip() == '현금'
-    if force_misu_client_cash or pre_post_chk_checked:
+    # 매출처 현금(현금확인)은 세금/계산서 처리용이며 수금상태(미수·수금완료)와 연동하지 않음
+    if pre_post_chk_checked:
         return "미수", "bg-red"
     is_over_30 = False
     if dispatch_dt_str:
@@ -307,7 +307,7 @@ def _misu_status_rules_from_row(r, today_naive):
 
 
 def _misu_status_for_settlement_row(r, today_naive):
-    """정산관리와 동일 규칙의 수금상태 라벨·표시용 색 클래스(in_dt 우선, 매출처 현금·선착불확인·기한·선착불금액).
+    """정산관리와 동일 규칙의 수금상태 라벨·표시용 색 클래스(in_dt 우선, 선착불확인·기한·선착불금액).
     정산관리 수금 버튼으로만 설정되는 in_click_misu 가 있으면(입금일 없을 때) 미수로 표시."""
     r = dict(r) if hasattr(r, 'keys') else r
     in_dt = str(r.get('in_dt') or '').strip()
